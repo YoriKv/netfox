@@ -36,6 +36,19 @@ func suite():
 		)
 	)
 
+	define("send interval", func():
+		test("should record its nodes every send interval", func():
+			make_synchronizer()
+			synchronizer.send_interval = 4
+			Vest.get_tree().root.add_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_equal(NetworkHistoryServer.get_sync_interval(root), 4)
+			Vest.get_tree().root.remove_child(root)
+			expect_equal(NetworkHistoryServer.get_sync_interval(root), 1, "Forgotten with the node")
+		)
+	)
+
 	define("tree", func():
 		test("should not register after leaving tree", func():
 			make_synchronizer()

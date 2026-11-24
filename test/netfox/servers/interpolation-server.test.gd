@@ -25,6 +25,9 @@ func before_case(__):
 
 func after_case(__):
 	interpolation_server.queue_free()
+	NetworkHistoryServer.deregister(test_node)
+	NetworkHistoryServer.reset()
+	NetworkMocks.set_network_tick(0)
 	test_node.queue_free()
 
 func suite() -> void:
@@ -220,6 +223,63 @@ func suite() -> void:
 		)
 	)
 
+	define("states received every few ticks", func():
+		test("should move evenly from each state to the next over the send interval", func():
+			receive_every(3)
+			receive_loop(3, [[3, Vector3(3, 0, 0)]])
+			receive_loop(4, [])
+			receive_loop(5, [])
+			receive_loop(6, [[6, Vector3(6, 0, 0)]])
+
+			expect_equal(drawn_at([0., 0.5]), [Vector3(3, 0, 0), Vector3(3.5, 0, 0)])
+			receive_loop(7, [])
+			expect_equal(drawn_at([0., 0.5]), [Vector3(4, 0, 0), Vector3(4.5, 0, 0)])
+			receive_loop(8, [])
+			receive_loop(9, [[9, Vector3(9, 0, 0)]])
+			expect_equal(drawn_at([0.]), [Vector3(6, 0, 0)], "Reached the state before as the next arrives")
+		)
+
+		test("should stand still at the newest state until a late one arrives, then move on from there", func():
+			receive_every(3)
+			receive_loop(3, [[3, Vector3(3, 0, 0)]])
+			receive_loop(6, [[6, Vector3(6, 0, 0)]])
+			receive_loop(9, [])
+			expect_equal(drawn_at([0., 0.5]), [Vector3(6, 0, 0), Vector3(6, 0, 0)], "No extrapolation")
+			receive_loop(10, [[9, Vector3(9, 0, 0)]])
+			expect_equal(drawn_at([0., 1.5]), [Vector3(6, 0, 0), Vector3(7.5, 0, 0)])
+		)
+
+		test("should catch up from where it is drawn after a lost state", func():
+			receive_every(3)
+			receive_loop(3, [[3, Vector3(3, 0, 0)]])
+			receive_loop(6, [[6, Vector3(6, 0, 0)]])
+			receive_loop(9, [])
+			receive_loop(12, [[12, Vector3(12, 0, 0)]])
+
+			expect_equal(drawn_at([0., 1.5, 3.]), [Vector3(6, 0, 0), Vector3(9, 0, 0), Vector3(12, 0, 0)])
+		)
+
+		test("should start from where it is drawn when a state follows a late one closely", func():
+			receive_every(3)
+			receive_loop(3, [[3, Vector3(3, 0, 0)]])
+			receive_loop(8, [[6, Vector3(6, 0, 0)]])
+			receive_loop(9, [[9, Vector3(9, 0, 0)]])
+
+			expect_equal(drawn_at([0., 3.]), [Vector3(4, 0, 0), Vector3(9, 0, 0)], "No jump back or forward")
+		)
+
+		test("should keep the last two ticks of a subject it is authority of", func():
+			receive_every(3)
+			test_node.set_multiplayer_authority(1)
+			for tick in [1, 2]:
+				NetworkMocks.set_network_tick(tick)
+				test_node.position = Vector3(tick, 0, 0)
+				interpolation_server._record_next_state()
+
+			expect_equal(drawn_at([0.5]), [Vector3(1.5, 0, 0)])
+		)
+	)
+
 	define("tick loop integration", func():
 		test("_clear_teleports should reset teleport flag", func():
 			test_node.position = Vector3(0, 0, 0)
@@ -233,3 +293,32 @@ func suite() -> void:
 			expect_not(interpolation_server.is_teleporting(test_node), "Should reset teleport flag")
 		)
 	)
+
+# test_node's position arrives from peer 2 every [param interval] ticks
+func receive_every(interval: int) -> void:
+	test_node.set_multiplayer_authority(2)
+	NetworkHistoryServer.register_sync_state(test_node, ^"position")
+	NetworkHistoryServer.set_sync_interval(test_node, interval)
+	interpolation_server.register(test_node, ":position")
+
+# A tick loop ending at [param tick], after which [param states] ([tick,
+# position]) were received; the node is restored and recorded as the tick loop
+# leaves it
+func receive_loop(tick: int, states: Array) -> void:
+	NetworkMocks.set_network_tick(tick)
+	interpolation_server._apply_target_state()
+	for state in states:
+		NetworkHistoryServer._merge_synchronizer_state(_Snapshot.of(state[0], [[test_node, ^"position", state[1]]], [test_node]))
+	NetworkHistoryServer._restore_synchronizer_state(tick)
+	interpolation_server._record_next_state()
+
+# The positions drawn [param ticks] after the last tick loop, in fractions of a tick
+func drawn_at(ticks: Array) -> Array:
+	var result := []
+	var tick := NetworkTime.tick
+	for after in ticks:
+		NetworkMocks.set_network_tick(tick + floori(after))
+		interpolation_server.interpolate(after - floori(after))
+		result.append(test_node.position)
+	NetworkMocks.set_network_tick(tick)
+	return result

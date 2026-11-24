@@ -54,9 +54,12 @@ func ensure_snapshot(tick: int, subject: Object, carry_forward: bool) -> _Object
 	# NOTE: May return null if tick too old
 	return history.get_at(tick) as _ObjectSnapshot
 
-func restore_latest(tick: int) -> bool:
+# Subjects in [param kept] are left as they are
+func restore_latest(tick: int, kept: Dictionary = {}) -> bool:
 	var any_applied := false
 	for subject in _subjects:
+		if kept.has(subject):
+			continue
 		var history := _data[subject] as _HistoryBuffer
 		if not history.has_latest_at(tick):
 			continue

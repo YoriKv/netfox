@@ -14,6 +14,11 @@ class_name _InterpolationServer
 ## Interpolation can be toggled globally, using [method set_server_enabled].
 ## Interpolation is disabled by default when running headless, since no
 ## rendering is taking place.
+## [br][br]
+## A subject whose state its authority sends every few ticks (a
+## [StateSynchronizer]'s send interval) is interpolated from where it is drawn
+## when a new state arrives to that state, over the send interval. It stands
+## still at the newest state until the next one arrives.
 
 var _enabled := true
 
@@ -26,6 +31,10 @@ var _state_to := _Snapshot.new(0)
 var _enabled_subjects := _Set.new()
 var _recording_enabled := _Set.new()
 var _teleporting := _Set.new()
+
+# Subjects received with a send interval to [the tick of the newest state,
+# the tick interpolating toward it started]
+var _received := {}
 
 static var _logger := NetfoxLogger._for_netfox("InterpolationServer")
 
@@ -70,6 +79,7 @@ func deregister(subject: Node) -> void:
 	_enabled_subjects.erase(subject)
 	_recording_enabled.erase(subject)
 	_teleporting.erase(subject)
+	_received.erase(subject)
 
 ## Return true if the [param subject] is registered.
 func has_subject(subject: Node) -> bool:
@@ -224,7 +234,18 @@ func interpolate_subject(subject: Node, factor: float) -> void:
 ## Called automatically by default.
 func interpolate(factor: float) -> void:
 	for subject in _properties.get_subjects():
-		interpolate_subject(subject, factor)
+		if _received.has(subject):
+			interpolate_subject(subject, _get_received_progress(subject, NetworkTime.tick + factor))
+		else:
+			interpolate_subject(subject, factor)
+
+# How far [param subject] is from the state before its newest to its newest,
+# at [param tick]: the ticks since it arrived over the send interval
+func _get_received_progress(subject: Node, tick: float) -> float:
+	if not _received.has(subject):
+		return 1.
+	var started := (_received[subject] as Array)[1] as int
+	return clampf((tick - started) / NetworkHistoryServer.get_sync_interval(subject), 0., 1.)
 
 func _clear_teleports() -> void:
 	_teleporting.clear()
@@ -234,7 +255,36 @@ func _apply_target_state() -> void:
 
 func _record_next_state() -> void:
 	for subject in _recording_enabled.values():
-		push_state(subject)
+		if _is_received_with_interval(subject):
+			_record_received_state(subject)
+		else:
+			push_state(subject)
+
+func _is_received_with_interval(subject: Node) -> bool:
+	return NetworkHistoryServer.get_sync_interval(subject) > 1 and not subject.is_multiplayer_authority()
+
+# On a new state received, interpolate from where the subject is drawn now
+func _record_received_state(subject: Node) -> void:
+	var state_tick := NetworkHistoryServer._sync_history.get_latest_tick(NetworkTime.tick, subject)
+	var received := _received.get(subject, [-1, 0]) as Array
+	if state_tick == received[0]:
+		return
+
+	# Where it is drawn now; the new state itself if nothing was drawn before
+	var progress := _get_received_progress(subject, NetworkTime.tick)
+	var interps := _interpolators.get(subject, {}) as Dictionary
+	var drawn := {}
+	for property in _properties.get_properties_of(subject):
+		if not is_teleporting(subject) and _state_from.has_property(subject, property) and _state_to.has_property(subject, property):
+			var interpolator := interps.get(property, Interpolators.DEFAULT_INTERPOLATOR) as Interpolators.Interpolator
+			drawn[property] = interpolator.apply.call(_state_from.get_property(subject, property), _state_to.get_property(subject, property), progress)
+		else:
+			drawn[property] = subject.get_indexed(property)
+
+	push_state(subject)
+	for property in drawn:
+		_state_from.set_property(subject, property, drawn[property])
+	_received[subject] = [state_tick, NetworkTime.tick]
 
 func _is_headless() -> bool:
 	return DisplayServer.get_name() == "headless"

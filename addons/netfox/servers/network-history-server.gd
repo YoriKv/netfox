@@ -21,6 +21,10 @@ var _sync_history_size := ProjectSettings.get_setting("netfox/state_synchronizer
 
 var _ignored_subjects := _Set.new()
 
+var _sync_intervals := {} # sync state subject to its send interval, if over one tick
+var _sync_phases := {} # sync state subject to the ticks its sending is offset by
+var _sync_next_phase := 0
+
 # Input subjects whose input for a tick was received or recorded since the last
 # rollback loop, for the performance monitors
 var _new_inputs := {} # tick to _Set of input subjects
@@ -61,6 +65,27 @@ func register_sync_state(node: Node, property: NodePath) -> void:
 func deregister_sync_state(node: Node, property: NodePath) -> void:
 	_sync_state_properties.erase(node, property)
 
+## Record [param node]'s synchronized state only every [param ticks] ticks:
+## at the ticks divisible by it, or with [param is_staggered] at ticks offset
+## by a phase of its own, so the nodes set so in turn spread over the interval
+## [br][br]
+## Set by [StateSynchronizer] from its send interval: its authority records and
+## sends the state only at those ticks, and keeps its own values between them.
+func set_sync_interval(node: Node, ticks: int, is_staggered: bool = false) -> void:
+	_sync_phases.erase(node)
+	if ticks <= 1:
+		_sync_intervals.erase(node)
+		return
+	_sync_intervals[node] = ticks
+	if is_staggered:
+		_sync_phases[node] = _sync_next_phase % ticks
+		_sync_next_phase += 1
+
+## Return the ticks between [param node]'s synchronized states, see
+## [method set_sync_interval]
+func get_sync_interval(node: Node) -> int:
+	return _sync_intervals.get(node, 1)
+
 ## Deregister a node, no longer tracking any property it had registered using
 ## any of the [code]register_*()[/code] methods
 func deregister(node: Node) -> void:
@@ -68,6 +93,8 @@ func deregister(node: Node) -> void:
 	_rb_state_properties.erase_subject(node)
 	_rb_input_properties.erase_subject(node)
 	_sync_state_properties.erase_subject(node)
+	_sync_intervals.erase(node)
+	_sync_phases.erase(node)
 
 	# Erase from per-object history
 	_rb_state_history.erase_subject(node)
@@ -195,8 +222,14 @@ func _record_rollback_state(tick: int) -> void:
 	)
 
 func _record_sync_state(tick: int) -> void:
+	if _sync_intervals.is_empty():
+		_record(tick, _sync_history, _sync_state_snapshots, _sync_state_properties, true, func(subject: Node):
+			return subject.is_multiplayer_authority()
+		)
+		return
+
 	_record(tick, _sync_history, _sync_state_snapshots, _sync_state_properties, true, func(subject: Node):
-		return subject.is_multiplayer_authority()
+		return subject.is_multiplayer_authority() and _is_sync_due(subject, tick)
 	)
 
 func _restore_rollback_input(tick: int) -> bool:
@@ -205,8 +238,19 @@ func _restore_rollback_input(tick: int) -> bool:
 func _restore_rollback_state(tick: int) -> bool:
 	return _restore_latest(tick, _rb_state_history)
 
+func _is_sync_due(subject: Object, tick: int) -> bool:
+	return (tick + (_sync_phases.get(subject, 0) as int)) % (_sync_intervals.get(subject, 1) as int) == 0
+
+# The authority keeps its own values of a subject with a send interval, as it
+# records them only every few ticks
 func _restore_synchronizer_state(tick: int) -> bool:
-	return _restore_latest(tick, _sync_history)
+	if _sync_intervals.is_empty():
+		return _restore_latest(tick, _sync_history)
+	var kept := {}
+	for subject in _sync_intervals:
+		if (subject as Node).is_multiplayer_authority():
+			kept[subject] = true
+	return _sync_history.restore_latest(tick, kept)
 
 func _get_rollback_input_snapshot(tick: int) -> _Snapshot:
 	return _rb_input_snapshots.get_at(tick)

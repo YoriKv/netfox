@@ -30,6 +30,25 @@ var full_state_interval: int = 24
 @export_range(0, 128, 1, "or_greater")
 var diff_ack_interval: int = 0
 
+## Ticks between sending the state.
+## [br][br]
+## The nodes' state is recorded and sent at the ticks divisible by this
+## interval, so synchronizers with the same interval send together, one packet
+## per peer. A diff is relative to the state last sent, and a node newly
+## visible to a peer or due a full state gets it in full at its next sending
+## tick. [TickInterpolator] spreads each state received over the interval. Set
+## the same value on every peer.
+@export_range(1, 60, 1, "or_greater")
+var send_interval: int = 1
+
+## Spread the nodes of synchronizers with this on over the send interval.
+## [br][br]
+## Each node is sent at a phase of its own, so a crowd costs each peer a
+## packet every tick, with a share of the nodes, instead of all of them in one
+## packet every [member send_interval] ticks: the authority's work is spread
+## evenly over the ticks instead of falling on one in every interval.
+@export var stagger_sends: bool = false
+
 ## Decides which peers will receive updates
 var visibility_filter := PeerVisibilityFilter.new()
 
@@ -61,6 +80,7 @@ func process_settings() -> void:
 		for property in _properties.get_properties_of(node):
 			NetworkHistoryServer.register_sync_state(node, property)
 			NetworkSynchronizationServer.register_sync_state(node, property)
+		NetworkHistoryServer.set_sync_interval(node, send_interval, stagger_sends)
 
 	# Register schema, which is dropped with the nodes on leaving the tree
 	_register_schema(_schema)

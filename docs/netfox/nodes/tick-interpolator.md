@@ -33,6 +33,17 @@ instantly upon entering the scene tree, like projectiles.
 interpolate towards that. Disabling this will require you to manually call
 `push_state()` whenever the *properties* are updated.
 
+## States sent every few ticks
+
+A node whose state a [StateSynchronizer] sends every few ticks (its *Send
+interval*) is interpolated from where it is drawn when a new state arrives to
+that state, over the send interval. It is drawn about one interval plus the
+network delay behind its authority. When a state is late or lost, the node
+stands at the newest state until the next one arrives, then moves on from there
+without a jump; it is never extrapolated. Uneven arrival shows as uneven speed:
+to hide it, keep the received states by tick and draw them a fixed delay behind
+the newest instead.
+
 ## Sudden changes
 
 When a node makes a sudden change, like teleporting from one place to another,
@@ -64,3 +75,4 @@ otherwise *TickInterpolator* won't apply the changes.
 [Interpolators]: ../guides/interpolators.md
 [Interpolation caveats]: ../tutorials/interpolation-caveats.md
 [Property paths]: ../guides/property-paths.md
+[StateSynchronizer]: ./state-synchronizer.md

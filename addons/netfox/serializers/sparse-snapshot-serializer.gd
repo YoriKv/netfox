@@ -6,8 +6,9 @@ static func _static_init() -> void:
 
 # Pass the same [param frames] to write snapshots for several peers: each
 # subject's data is encoded once for all snapshots holding the same values of
-# it, and only its reference per peer
-func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}) -> Array[PackedByteArray]:
+# it, and only its reference per peer. Given [param subjects], only those are
+# written, in their order
+func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}, subjects: Array = []) -> Array[PackedByteArray]:
 	var packet_buffer := _PacketBuffer.new(max_packet_size)
 	var frame_buffer := StreamPeerBuffer.new()
 	var node_buffer := StreamPeerBuffer.new()
@@ -21,7 +22,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		packet.put_u32(snapshot.tick)
 
 	# For each node
-	for subject in properties.get_subjects_raw():
+	for subject in (subjects if not subjects.is_empty() else properties.get_subjects_raw()):
 		if not filter.call(subject): continue
 		if not snapshot.is_auth(subject): continue
 

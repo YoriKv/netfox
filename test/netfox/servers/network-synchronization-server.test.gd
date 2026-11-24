@@ -1150,6 +1150,142 @@ func suite() -> void:
 		)
 	)
 
+	define("sync send interval", func():
+		test("should record and send a subject only at the ticks divisible by its interval", func():
+			var sync_server := await get_peered_server([2])
+			var node := await get_node("subject")
+			register_sync_state(sync_server, node)
+			NetworkHistoryServer.set_sync_interval(node, 3)
+
+			for tick in range(1, 8):
+				sync_tick(sync_server, node, tick, Vector3(tick, 0, 0))
+
+			expect_equal(sent_sync_states(sync_server, 2, [node]), [
+				[3, false, [[0, { ^"position": Vector3(3, 0, 0) }]]],
+				[6, false, [[0, { ^"position": Vector3(6, 0, 0) }]]]
+			])
+			expect_equal(recorded_sync_ticks(node, range(1, 8)), [3, 6], "Recorded only when sent")
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send synchronizers of other intervals together at common ticks", func():
+			var sync_server := await get_peered_server([2])
+			var every := await get_node("every")
+			var third := await get_node("third")
+			register_sync_state(sync_server, every)
+			register_sync_state(sync_server, third)
+			NetworkHistoryServer.set_sync_interval(third, 3)
+
+			for tick in range(1, 4):
+				every.position = Vector3(tick, 0, 0)
+				third.position = Vector3(0, tick, 0)
+				sync_tick(sync_server, null, tick)
+
+			expect_equal(sent_sync_states(sync_server, 2, [every, third]), [
+				[1, false, [[0, { ^"position": Vector3(1, 0, 0) }]]],
+				[2, false, [[0, { ^"position": Vector3(2, 0, 0) }]]],
+				[3, false, [[0, { ^"position": Vector3(3, 0, 0) }], [1, { ^"position": Vector3(0, 3, 0) }]]]
+			])
+
+			cleanup(sync_server, [every, third])
+		)
+
+		test("should send staggered subjects each at its own phase", func():
+			var sync_server := await get_peered_server([2])
+			var nodes := []
+			NetworkHistoryServer._sync_next_phase = 0
+			for i in 3:
+				var node := await get_node("node%d" % i)
+				register_sync_state(sync_server, node)
+				NetworkHistoryServer.set_sync_interval(node, 3, true)
+				nodes.append(node)
+
+			for tick in range(1, 7):
+				for node in nodes:
+					node.position = Vector3(tick, 0, 0)
+				sync_tick(sync_server, null, tick)
+
+			expect_equal(sent_sync_states(sync_server, 2, nodes).map(func(state): return [state[0], state[2].map(func(it): return it[0])]), [
+				[1, [2]], [2, [1]], [3, [0]], [4, [2]], [5, [1]], [6, [0]]
+			], "A third of them every tick")
+
+			cleanup(sync_server, nodes)
+		)
+
+		test("should diff against the state last sent of the subject", func():
+			var sync_server := await get_peered_server([2])
+			var every := await get_node("every")
+			var third := await get_node("third")
+			register_sync_state(sync_server, every)
+			register_sync_state(sync_server, third)
+			sync_server.register_sync_state(third, ^"scale")
+			NetworkHistoryServer.register_sync_state(third, ^"scale")
+			NetworkHistoryServer.set_sync_interval(third, 3)
+
+			for tick in range(1, 7):
+				every.position = Vector3(tick, 0, 0)
+				third.position = Vector3(0, tick, 0)
+				sync_tick(sync_server, null, tick)
+
+			var states := sent_sync_states(sync_server, 2, [every, third], [^"position", ^"scale"])
+			expect_equal(states.back(), [6, false, [[0, { ^"position": Vector3(6, 0, 0) }], [1, { ^"position": Vector3(0, 6, 0) }]]],
+				"Its unchanged scale is not sent again")
+
+			cleanup(sync_server, [every, third])
+		)
+
+		test("should send a subject newly visible or due a full state in full at its next sending tick", func():
+			var sync_server := await get_peered_server([2])
+			sync_server._sync_full_scheduler = _IntervalScheduler.new(4)
+			var node := await get_node("subject")
+			register_sync_state(sync_server, node)
+			sync_server.register_sync_state(node, ^"scale")
+			NetworkHistoryServer.register_sync_state(node, ^"scale")
+			NetworkHistoryServer.set_sync_interval(node, 3)
+			var filter := PeerVisibilityFilter.new()
+			filter.default_visibility = false
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_server.register_visibility_filter(node, filter)
+
+			for tick in range(1, 13):
+				if tick == 4:
+					filter.default_visibility = true
+					filter.update_visibility(PackedInt32Array([2]))
+				sync_tick(sync_server, node, tick, Vector3(tick, 0, 0))
+
+			var properties: Array[NodePath] = [^"position", ^"scale"]
+			expect_equal(sent_sync_states(sync_server, 2, [node], properties), [
+				[6, false, [[0, { ^"position": Vector3(6, 0, 0), ^"scale": Vector3.ONE }]]],
+				[9, false, [[0, { ^"position": Vector3(9, 0, 0), ^"scale": Vector3.ONE }]]],
+				[12, true, [[0, { ^"position": Vector3(12, 0, 0), ^"scale": Vector3.ONE }]]]
+			], "Visible from 4, a full state due at 8, at 12 due both")
+
+			filter.free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should keep the authority's values between its records, restore received ones", func():
+			var own := await get_node("own")
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			for node in [own, remote]:
+				NetworkHistoryServer.register_sync_state(node, ^"position")
+				NetworkHistoryServer.set_sync_interval(node, 3)
+
+			own.position = Vector3.ONE
+			NetworkHistoryServer._record_sync_state(3)
+			NetworkHistoryServer._merge_synchronizer_state(_Snapshot.of(3, [[remote, ^"position", Vector3.UP]], [remote]))
+			own.position = Vector3(2, 0, 0)
+			remote.position = Vector3.ZERO
+			NetworkHistoryServer._restore_synchronizer_state(4)
+
+			expect_equal([own.position, remote.position], [Vector3(2, 0, 0), Vector3.UP])
+
+			cleanup_global([own, remote])
+		)
+	)
+
 var _refusal_handler: Callable
 
 # Each input refusal as [peer, tick], until disconnected
@@ -1368,6 +1504,37 @@ func sent_state_ticks(sync_server: _NetworkSynchronizationServer, peer: int) -> 
 			buffer.data_array = command[1]
 			result.append([buffer.get_u32(), command[0] == sync_server._cmd_full_state._idx])
 	return result
+
+# Each sync state sent to [param peer] as [tick, is full, [[index in
+# [param nodes], values], ...]]
+func sent_sync_states(sync_server: _NetworkSynchronizationServer, peer: int, nodes: Array, properties: Array[NodePath] = [^"position"]) -> Array:
+	var pool := _PropertyPool.new()
+	for node in nodes:
+		for property in properties:
+			pool.add(node, property)
+	var dense := _DenseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+	var sparse := _SparseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+
+	var result := []
+	for command in servers.command_server().commands_sent:
+		if command[2] != peer:
+			continue
+		var is_full: bool = command[0] == sync_server._cmd_full_sync._idx
+		if not is_full and command[0] != sync_server._cmd_diff_sync._idx:
+			continue
+		var buffer := StreamPeerBuffer.new()
+		buffer.data_array = command[1]
+		var snapshot := dense.read_from(1, pool, buffer) if is_full else sparse.read_from(1, pool, buffer)
+		var subjects := []
+		for node in nodes:
+			if snapshot.has_subject(node):
+				subjects.append([nodes.find(node), snapshot._data[node]])
+		result.append([snapshot.tick, is_full, subjects])
+	return result
+
+# The ticks of [param ticks] with a sync state of [param node] recorded
+func recorded_sync_ticks(node: Node, ticks: Array) -> Array:
+	return ticks.filter(func(tick): return NetworkHistoryServer._sync_history.get_snapshot(tick, node) != null)
 
 func sent_diffs(sync_server: _NetworkSynchronizationServer, peer: int) -> Array[PackedByteArray]:
 	var result: Array[PackedByteArray] = []

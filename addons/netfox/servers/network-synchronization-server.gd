@@ -63,7 +63,9 @@ var _rb_newest_sent := {} # peer to (subject to _SentState)
 var _rb_newest_loop_to := -1 # The last tick the previous loop recorded
 
 var _last_sync_state_sent := _Snapshot.new(0)
+var _is_last_sync_state_own := true # Not a recorded snapshot, so it may be written
 var _sync_sent_subjects := {} # peer to _Set of subjects sent since visible
+var _sync_full_pending := _Set.new() # subjects with a send interval due a full state
 var _sync_enable_diffs := ProjectSettings.get_setting("netfox/state_synchronizer/enable_diff_states", true) as bool
 var _sync_full_interval := ProjectSettings.get_setting("netfox/state_synchronizer/full_state_interval", 24) as int
 var _sync_full_scheduler := _IntervalScheduler.new(_sync_full_interval)
@@ -211,6 +213,8 @@ func deregister(node: Node) -> void:
 		(sent_subjects as _Set).erase(node)
 	for sent_states in _rb_newest_sent.values():
 		(sent_states as Dictionary).erase(node)
+	_sync_full_pending.erase(node)
+	_last_sync_state_sent.erase_subject(node)
 
 	# NOTE: _rb_sent_state_history may contain snapshots with invalid subjects
 	# NOTE: Iterating all sent snapshots for `node` may be slow and useless
@@ -236,7 +240,9 @@ func reset() -> void:
 	for data in [_newest_input, _gap_checked, _fills, _starved_from, _starve_filled]:
 		(data as Dictionary).clear()
 	_last_sync_state_sent = _Snapshot.new(0)
+	_is_last_sync_state_own = true
 	_sync_sent_subjects.clear()
+	_sync_full_pending.clear()
 
 ## Ingest rollback [param input] for [param subject] at [param tick], as if it
 ## was received from the subject's authority
@@ -640,6 +646,7 @@ func _synchronize_sync_state(tick: int) -> void:
 		return
 
 	# Grab snapshot from NetworkHistoryServer
+	# It holds the subjects due at this tick, see their send intervals
 	var snapshot := NetworkHistoryServer._get_synchronizer_state_snapshot(tick)
 	if not snapshot:
 		return
@@ -649,19 +656,38 @@ func _synchronize_sync_state(tick: int) -> void:
 	if not _sync_enable_diffs:
 		is_full = true
 
+	# A subject sent every few ticks and not due now is sent in full when it is
+	var intervals := NetworkHistoryServer._sync_intervals
+	if is_full:
+		for subject in intervals:
+			if not snapshot.has_subject(subject):
+				_sync_full_pending.add(subject)
+	if snapshot.is_empty():
+		return
+
 	var diff: _Snapshot = null
 	if not is_full:
 		diff = _Snapshot.make_patch(_last_sync_state_sent, snapshot)
+		for subject in snapshot.get_subjects():
+			if _sync_full_pending.has(subject):
+				_sync_full_pending.erase(subject)
+				snapshot.copy_subject_to(subject, diff)
+				diff.set_auth(subject, true)
+	else:
+		for subject in snapshot.get_subjects():
+			_sync_full_pending.erase(subject)
 
 	# Each subject's encoded data, shared by all peers sent the same of it
 	var shared_frames := {}
+	# With send intervals, only the subjects due now; else all of them
+	var due_subjects := [] if intervals.is_empty() else snapshot.get_subjects()
 
 	for peer in _get_peers():
-		# A diff is relative to the previous tick's state, which a subject the peer
+		# A diff is relative to the state last sent, which a subject the peer
 		# could not see was not sent with - send such subjects in full first
 		var sent_subjects := _get_peer_sync_subjects(peer)
 		var peer_diff := diff
-		for subject in _sync_owned_state_properties.get_subjects_raw():
+		for subject in snapshot.get_subjects():
 			if not _is_node_visible_to(peer, subject):
 				sent_subjects.erase(subject)
 				continue
@@ -678,7 +704,7 @@ func _synchronize_sync_state(tick: int) -> void:
 		var filter := func(subject): return sent_subjects.has(subject)
 
 		if is_full:
-			var packets := _dense_serializer.write_for(peer, snapshot, _sync_owned_state_properties, filter, shared_frames)
+			var packets := _dense_serializer.write_for(peer, snapshot, _sync_owned_state_properties, filter, shared_frames, _BaseSnapshotSerializer._default_property_filter, due_subjects)
 			for packet in packets:
 				_cmd_full_sync.send(packet, peer)
 
@@ -686,7 +712,7 @@ func _synchronize_sync_state(tick: int) -> void:
 			NetworkPerformance.push_sent_state_props(snapshot.size())
 		else:
 			# Nothing is sent if no visible subject changed
-			var packets := _sparse_serializer.write_for(peer, peer_diff, _sync_owned_state_properties, filter, shared_frames)
+			var packets := _sparse_serializer.write_for(peer, peer_diff, _sync_owned_state_properties, filter, shared_frames, due_subjects)
 			for packet in packets:
 				_cmd_diff_sync.send(packet, peer)
 
@@ -694,8 +720,17 @@ func _synchronize_sync_state(tick: int) -> void:
 			NetworkPerformance.push_sent_state_props(peer_diff.size())
 
 	# Remember last sent state for diffing
-	# NOTE: This is a shared instance, theoretically shouldn't screw things up
-	_last_sync_state_sent = snapshot
+	if intervals.is_empty():
+		# NOTE: This is a shared instance, theoretically shouldn't screw things up
+		_last_sync_state_sent = snapshot
+		_is_last_sync_state_own = false
+	else:
+		# Only the subjects due now were sent, the others keep their last state
+		if not _is_last_sync_state_own:
+			_last_sync_state_sent = _last_sync_state_sent.duplicate()
+			_is_last_sync_state_own = true
+		for subject in snapshot.get_subjects():
+			_last_sync_state_sent._data[subject] = snapshot._data[subject]
 
 func _get_peers() -> PackedInt32Array:
 	return multiplayer.get_peers()

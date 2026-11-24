@@ -8,8 +8,8 @@ static func _static_init() -> void:
 # subject's data is encoded once for all snapshots holding the same values of
 # it, after [param property_filter], and only its reference per peer
 # The [param property_filter] leaves properties out; the reader must leave out
-# the same ones
-func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}, property_filter: Callable = _default_property_filter) -> Array[PackedByteArray]:
+# the same ones. Given [param subjects], only those are written, in their order
+func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}, property_filter: Callable = _default_property_filter, subjects: Array = []) -> Array[PackedByteArray]:
 	var packet_buffer := _PacketBuffer.new(max_packet_size)
 	var frame_buffer := StreamPeerBuffer.new()
 	var node_buffer := StreamPeerBuffer.new()
@@ -22,7 +22,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		packet.put_u32(snapshot.tick)
 
 	# For each node
-	for subject in properties.get_subjects_raw():
+	for subject in (subjects if not subjects.is_empty() else properties.get_subjects_raw()):
 		if not filter.call(subject): continue
 		if not snapshot.is_auth(subject): continue
 
