@@ -33,6 +33,13 @@ var _sync_owned_state_properties := _PropertyPool.new()
 
 var _visibility_filters := {} # Node to PeerVisibilityFilter
 
+var _starvation_ticks := {} # input subject to the ticks of silence it starves after
+var _newest_input := {} # input subject to the newest tick of input received
+var _gap_checked := {} # input subject to the last tick checked for a gap
+var _fills := {} # input subject to (filled tick to true if starved, false if a gap)
+var _starved_from := {} # input subject to the first tick of its current silence
+var _starve_filled := {} # input subject to the last tick filled in its current silence
+
 var _rb_enable_input_broadcast := ProjectSettings.get_setting("netfox/rollback/enable_input_broadcast", false) as bool
 var _rb_enable_diffs := NetworkRollback.enable_diff_states
 var _rb_full_interval := ProjectSettings.get_setting("netfox/rollback/full_state_interval", 24) as int
@@ -150,6 +157,31 @@ func register_visibility_filter(node: Node, filter: PeerVisibilityFilter) -> voi
 func deregister_visibility_filter(node: Node) -> void:
 	_visibility_filters.erase(node)
 
+## Set the input starvation threshold of [param input], in ticks; 0 disables it
+## [br][br]
+## With starvation, missing input of [param input]'s owner is filled as if
+## received, so the nodes it controls are simulated and their state is sent:
+## [br]- A tick whose input can no longer arrive, as input [code]input_redundancy[/code]
+## ticks newer has, gets a copy of the input before it.
+## [br]- Once the newest input is more than [param ticks] old, the owner is
+## silent: every tick after it is filled up to the current one, then each new
+## tick as it is simulated. Before recording each, [code]_rollback_starve(tick)[/code]
+## is called on [param input] if it has one, so the game can adjust the copied
+## input, e.g. release the triggers.
+## [br]- The first input received again ends the silence at its tick: the
+## fills from it on are withdrawn for the real input, the earlier ones stay and
+## real input for them, or for ticks before the silence, is refused.
+## [br][br]
+## Nothing is filled before the owner's first input, where this peer does not
+## own the controlled nodes, for a dead or despawned node, or while the owner is
+## not connected.
+func set_input_starvation_for(input: Node, ticks: int) -> void:
+	if ticks > 0:
+		_starvation_ticks[input] = ticks
+		return
+	for data in [_starvation_ticks, _newest_input, _gap_checked, _fills, _starved_from, _starve_filled]:
+		(data as Dictionary).erase(input)
+
 ## Deregister any and all settings associated with [param node]
 func deregister(node: Node) -> void:
 	_rb_state_properties.erase_subject(node)
@@ -162,6 +194,7 @@ func deregister(node: Node) -> void:
 	_visibility_filters.erase(node)
 	_schemas.erase_subject(node)
 	_rb_latest_received_state.erase(node)
+	set_input_starvation_for(node, 0)
 	for sent_subjects in _sync_sent_subjects.values():
 		(sent_subjects as _Set).erase(node)
 
@@ -183,6 +216,8 @@ func erase_peer(peer: int) -> void:
 func reset() -> void:
 	_rb_sent_state_history.clear()
 	_rb_latest_received_state.clear()
+	for data in [_newest_input, _gap_checked, _fills, _starved_from, _starve_filled]:
+		(data as Dictionary).clear()
 	_last_sync_state_sent = _Snapshot.new(0)
 	_sync_sent_subjects.clear()
 
@@ -515,6 +550,10 @@ func _synchronize_sync_state(tick: int) -> void:
 func _get_peers() -> PackedInt32Array:
 	return multiplayer.get_peers()
 
+# Asks the node's own multiplayer, which may differ from ours
+func _is_peer_connected(node: Node, peer: int) -> bool:
+	return node.multiplayer.get_peers().has(peer)
+
 func _get_peer_sync_subjects(peer: int) -> _Set:
 	if not _sync_sent_subjects.has(peer):
 		_sync_sent_subjects[peer] = _Set.new()
@@ -567,8 +606,9 @@ func _handle_input(sender: int, data: PackedByteArray) -> void:
 
 	var snapshots := _redundant_serializer.read_from(sender, _rb_input_properties, buffer, true)
 
-	for snapshot in snapshots:
-		_ingest_input(sender, snapshot)
+	# Oldest first, so input ending a silence ends it at its oldest tick
+	for i in range(snapshots.size() - 1, -1, -1):
+		_ingest_input(sender, snapshots[i])
 
 func _handle_full_state(sender: int, data: PackedByteArray) -> void:
 	var buffer := StreamPeerBuffer.new()
@@ -637,6 +677,8 @@ func _ingest_input(sender: int, snapshot: _Snapshot) -> void:
 	snapshot.sanitize(sender)
 	if not _is_input_accepted(sender, snapshot):
 		return
+	if not _starvation_ticks.is_empty() and not _admit_starving_input(sender, snapshot):
+		return
 
 	_logger.trace("Ingesting input: %s", [snapshot])
 	if NetworkHistoryServer._merge_rollback_input(snapshot):
@@ -664,6 +706,137 @@ func _is_input_accepted(sender: int, snapshot: _Snapshot) -> bool:
 		return false
 
 	return true
+
+# Track the real input of inputs with starvation; refuse what a silence
+# filled, and end a silence with the first input after its start
+# Return false if nothing is left of the snapshot
+func _admit_starving_input(sender: int, snapshot: _Snapshot) -> bool:
+	var tick := snapshot.tick
+	for subject in snapshot.get_auth_subjects():
+		if not _starvation_ticks.has(subject):
+			continue
+
+		if _starved_from.has(subject):
+			if tick < (_starved_from[subject] as int):
+				snapshot.erase_subject(subject)
+				_refuse_input(sender, tick, "older than the silence it ended")
+				continue
+			_end_starvation(subject, tick)
+		elif _fills.has(subject) and (_fills[subject] as Dictionary).get(tick, false):
+			snapshot.erase_subject(subject)
+			_refuse_input(sender, tick, "filled while silent")
+			continue
+
+		if not _newest_input.has(subject):
+			_gap_checked[subject] = tick
+		_newest_input[subject] = maxi(tick, _newest_input.get(subject, tick))
+	return not snapshot.is_empty()
+
+# Withdraw the fills of [param input] from [param tick] on, for real input
+func _end_starvation(input: Node, tick: int) -> void:
+	var withdrawn := []
+	var fills := _fills.get(input, {}) as Dictionary
+	for filled in fills.keys():
+		if filled >= tick:
+			withdrawn.append(filled)
+			fills.erase(filled)
+	NetworkHistoryServer._withdraw_input(input, tick, withdrawn, _simulation_server._get_controlled_by(input))
+	_starved_from.erase(input)
+	_starve_filled.erase(input)
+	_gap_checked[input] = maxi(_gap_checked.get(input, tick - 1), tick - 1)
+	_logger.debug("Input of %s arrives again @%d, %d fills withdrawn", [input, tick, withdrawn.size()])
+
+# Fill the gaps and silences of inputs with starvation
+# Called before the rollback loop decides its range
+func _starve_inputs() -> void:
+	if _starvation_ticks.is_empty():
+		return
+
+	var redundancy := NetworkRollback.input_redundancy
+	var last := NetworkTime.tick - 1 # The newest tick this loop simulates
+	for input in _starvation_ticks.keys():
+		var input_node := input as Node
+		if not _newest_input.has(input_node) or not _can_starve(input_node, last):
+			continue
+
+		var newest := _newest_input[input_node] as int
+		var is_silent := _starved_from.has(input_node) or \
+			newest < NetworkTime.tick - (_starvation_ticks[input_node] as int)
+
+		# Every packet that carried a tick redundancy before the newest is older
+		# than the newest one; in a silence, all of them
+		var filled := _fill_gaps(input_node, newest - 1 if is_silent else newest - redundancy)
+
+		if is_silent:
+			if not _starved_from.has(input_node):
+				_starved_from[input_node] = newest + 1
+				_logger.debug("Input of %s silent since @%d, starving", [input_node, newest])
+			for tick in range((_starve_filled.get(input_node, newest) as int) + 1, last + 1):
+				if not _fill_input(input_node, tick, true):
+					break
+				_starve_filled[input_node] = tick
+				filled += 1
+
+		_forget_old_fills(input_node)
+		NetworkPerformance.push_inputs_starved(filled)
+
+# Return true if [param input]'s missing input may be filled up to [param tick]
+func _can_starve(input: Node, tick: int) -> bool:
+	if input.is_multiplayer_authority() or not _is_peer_connected(input, input.get_multiplayer_authority()):
+		return false
+	var controlled := _simulation_server._get_controlled_by(input)
+	if controlled.is_empty() or not controlled[0].is_multiplayer_authority():
+		return false
+	# A node without liveness callbacks counts as alive, a despawned one is done
+	return controlled.all(func(node): return RollbackLivenessServer.is_alive(node, tick))
+
+func _fill_gaps(input: Node, to: int) -> int:
+	var filled := 0
+	var from := maxi((_gap_checked.get(input, to) as int) + 1, NetworkRollback.history_start)
+	for tick in range(from, to + 1):
+		if not NetworkHistoryServer._rb_input_history.is_auth(tick, input) and _fill_input(input, tick, false):
+			filled += 1
+	_gap_checked[input] = maxi(_gap_checked.get(input, to), to)
+	return filled
+
+# Fill [param input] at [param tick] from its input before; with [param is_starved],
+# after the input node's own [code]_rollback_starve()[/code]
+func _fill_input(input: Node, tick: int, is_starved: bool) -> bool:
+	var controlled := _simulation_server._get_controlled_by(input)
+	if not controlled.all(func(node): return RollbackLivenessServer.is_alive(node, tick)):
+		return false
+	var previous := NetworkHistoryServer._rb_input_history.get_latest_snapshot(tick, input)
+	if previous == null:
+		return false
+
+	var snapshot := _Snapshot.new(tick)
+	if is_starved:
+		previous.apply()
+		if input.has_method("_rollback_starve"):
+			input._rollback_starve(tick)
+		for property in _rb_input_properties.get_properties_of_raw(input):
+			snapshot.set_property(input, property, input.get_indexed(property))
+	else:
+		for property in _rb_input_properties.get_properties_of_raw(input):
+			var value = previous.get_value(property)
+			snapshot.set_property(input, property, value.duplicate(true) if value is Array or value is Dictionary else value)
+	snapshot.set_auth(input, true)
+
+	if not NetworkHistoryServer._merge_rollback_input(snapshot):
+		return false
+	if not _fills.has(input):
+		_fills[input] = {}
+	_fills[input][tick] = is_starved
+	_logger.trace("Filled input @%d: %s", [tick, snapshot])
+	_on_input.emit(snapshot)
+	return true
+
+func _forget_old_fills(input: Node) -> void:
+	var fills := _fills.get(input, {}) as Dictionary
+	var start := NetworkRollback.history_start
+	for tick in fills.keys():
+		if tick < start:
+			fills.erase(tick)
 
 func _refuse_input(sender: int, tick: int, reason: String) -> void:
 	_logger.debug("Refusing input @%d from #%d, %s", [tick, sender, reason])

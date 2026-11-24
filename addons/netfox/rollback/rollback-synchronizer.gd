@@ -59,6 +59,24 @@ var diff_ack_interval: int = 0
 ## properties. Input is recorded after every network tick.
 @export var input_properties: Array[String]
 
+## Fill missing input of the owner, so the nodes keep being simulated; 0 to
+## disable.
+## [br][br]
+## A tick whose input can no longer arrive gets a copy of the input before it.
+## Once the newest input is older than this many ticks, the owner counts as
+## silent: every tick after it is filled at once, and each new tick as it is
+## simulated, after calling [code]_rollback_starve(tick)[/code] on the input
+## node, which may adjust the input. The state is authoritative and sent. The
+## first input received again ends the silence: the owner is corrected once.
+## Set it above the input lateness the supported connections show. See
+## [method _NetworkSynchronizationServer.set_input_starvation_for].
+@export_range(0, 64, 1, "or_greater")
+var input_starvation_ticks: int = 0:
+	set(v):
+		if v != input_starvation_ticks:
+			input_starvation_ticks = v
+			_set_input_starvation(v)
+
 ## This will broadcast input to all peers, turning this off will limit to
 ## sending it to the server only. Turning this off is recommended to save
 ## bandwidth and reduce cheating risks.
@@ -132,6 +150,8 @@ func process_settings() -> void:
 	# Register identifiers
 	for node in _state_properties.get_subjects() + _input_properties.get_subjects():
 		NetworkIdentityServer.register_node(node)
+
+	_set_input_starvation(input_starvation_ticks)
 
 	# Register visibility filter
 	for node in _state_properties.get_subjects():
@@ -488,6 +508,10 @@ func _reprocess_settings() -> void:
 
 	_properties_dirty = false
 	process_settings()
+
+func _set_input_starvation(ticks: int) -> void:
+	for node in _input_properties.get_subjects():
+		NetworkSynchronizationServer.set_input_starvation_for(node, ticks)
 
 func _set_prediction_enabled(enabled: bool) -> void:
 	for node in _sim_nodes + _state_properties.get_subjects():

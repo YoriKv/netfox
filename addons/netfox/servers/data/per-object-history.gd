@@ -66,6 +66,11 @@ func restore_latest(tick: int) -> bool:
 			any_applied = true
 	return any_applied
 
+# Remove the snapshots of [param subject] from [param tick] on
+func trim_subject(subject: Object, tick: int) -> void:
+	if _data.has(subject):
+		(_data[subject] as _HistoryBuffer).trim(tick)
+
 # Return the snapshot recorded for exactly [param tick], or null
 func get_snapshot(tick: int, subject: Object) -> _ObjectSnapshot:
 	if not _data.has(subject):

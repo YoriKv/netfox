@@ -171,6 +171,18 @@ func get_latest_at(at: int) -> Variant:
 func clear():
 	_tail = _head
 
+# Remove every entry at [param at] and after it
+func trim(at: int) -> void:
+	if _tail == _head or at >= _head:
+		return
+	if at <= _tail:
+		clear()
+		return
+	for i in range(at, _head):
+		_previous[i % _capacity] = null
+	_head = at
+	_slot = at % _capacity
+
 func is_empty() -> bool:
 	return _tail == _head
 

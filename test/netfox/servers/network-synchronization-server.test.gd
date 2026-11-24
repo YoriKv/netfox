@@ -634,6 +634,123 @@ func suite() -> void:
 		)
 	)
 
+	define("input starvation", func():
+		test("should fill a silence once, then each new tick", func():
+			var sync_server := await get_peered_server([2])
+			var setup := await starving_input(sync_server, 10)
+			var input := setup[0] as StarvingInput
+			ingest_inputs(sync_server, input, range(70, 81), 100)
+			var rewinds := record_inputs(sync_server)
+
+			NetworkMocks.set_network_tick(90)
+			sync_server._starve_inputs()
+			expect_empty(fills_of(sync_server, input), "Not silent while the newest input is the threshold old")
+
+			NetworkMocks.set_network_tick(92)
+			sync_server._starve_inputs()
+			expect_equal(fills_of(sync_server, input), range(81, 92), "One fill from the newest input up to the loop's tick")
+			expect_equal(rewinds.min(), 81, "One rewind, as deep as the threshold")
+			expect_equal(input.starved, range(81, 92))
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(input, 85), { ^"position": Vector3(80, 0, 0) })
+
+			rewinds.clear()
+			NetworkMocks.set_network_tick(93)
+			sync_server._starve_inputs()
+			expect_equal(rewinds, [92], "Then only the new tick, the newest the loop simulates")
+			NetworkMocks.set_network_tick(95)
+			sync_server._starve_inputs()
+			expect_equal(rewinds, [92, 93, 94])
+
+			cleanup_starving(sync_server, setup)
+		)
+
+		test("should fill a lost tick with a copy once input redundancy ticks later arrived", func():
+			var sync_server := await get_peered_server([2])
+			var setup := await starving_input(sync_server, 10)
+			var input := setup[0] as StarvingInput
+			NetworkMocks.set_network_tick(90)
+			ingest_inputs(sync_server, input, [80, 81, 83], 100)
+
+			for tick in range(84, 82 + NetworkRollback.input_redundancy):
+				ingest_inputs(sync_server, input, [tick], 100)
+			sync_server._starve_inputs()
+			expect_empty(fills_of(sync_server, input), "The lost tick may still arrive")
+
+			ingest_inputs(sync_server, input, [82 + NetworkRollback.input_redundancy], 100)
+			var rewinds := record_inputs(sync_server)
+			sync_server._starve_inputs()
+			expect_equal(fills_of(sync_server, input), [82])
+			expect_equal(rewinds, [82], "A rewind as deep as the lateness and the redundancy")
+			expect_empty(input.starved, "A gap is a copy, no hook")
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(input, 82), { ^"position": Vector3(81, 100, 0) })
+
+			# A late copy of it changes nothing
+			var refusals := record_server_refusals(sync_server)
+			sync_server._ingest_input(2, _Snapshot.of(82, [[input, ^"position", Vector3.ONE]], [input]))
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(input, 82), { ^"position": Vector3(81, 100, 0) })
+			expect_empty(refusals)
+
+			cleanup_starving(sync_server, setup)
+		)
+
+		test("should withdraw fills from the input ending a silence and refuse older input", func():
+			var sync_server := await get_peered_server([2])
+			var setup := await starving_input(sync_server, 10)
+			var input := setup[0] as StarvingInput
+			ingest_inputs(sync_server, input, range(70, 81), 100)
+			NetworkMocks.set_network_tick(92)
+			sync_server._starve_inputs()
+			var refusals := record_server_refusals(sync_server)
+
+			# A delayed input from before the silence
+			sync_server._ingest_input(2, _Snapshot.of(80, [[input, ^"position", Vector3.ONE]], [input]))
+			NetworkMocks.set_network_tick(94)
+			sync_server._ingest_input(2, _Snapshot.of(89, [[input, ^"position", Vector3.ONE]], [input]))
+			# Real input for a tick the silence filled
+			sync_server._ingest_input(2, _Snapshot.of(88, [[input, ^"position", Vector3.ONE]], [input]))
+
+			expect_equal(refusals, [[2, 80], [2, 88]])
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(input, 88), { ^"position": Vector3(80, 0, 0) })
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(input, 89), { ^"position": Vector3.ONE })
+			expect_empty(NetworkHistoryServer.get_rollback_input_at(input, 90), "Fills after it are withdrawn")
+			expect_not(NetworkHistoryServer._get_rollback_input_snapshot(90).has_subject(input))
+			expect_equal(NetworkHistoryServer.get_latest_input_for([input], 94), 89)
+			expect_not(sync_server._starved_from.has(input))
+			expect_equal(fills_of(sync_server, input), range(81, 89))
+
+			cleanup_starving(sync_server, setup)
+		)
+
+		test("should not fill before the first input, for a dead node or an owner gone", func():
+			var sync_server := await get_peered_server([2])
+			var setup := await starving_input(sync_server, 10)
+			var input := setup[0] as StarvingInput
+
+			NetworkMocks.set_network_tick(92)
+			sync_server._starve_inputs()
+			expect_empty(fills_of(sync_server, input), "Before the first input")
+
+			ingest_inputs(sync_server, input, [80], 100)
+			sync_server.peers = PackedInt32Array([3])
+			sync_server._starve_inputs()
+			expect_empty(fills_of(sync_server, input), "The owner gone")
+
+			sync_server.peers = PackedInt32Array([2])
+			# A state node beside it without liveness, as a child holding state
+			var state_node := await get_node("state")
+			servers.simulation_server().register_rollback_input_for(state_node, input)
+			RollbackLivenessServer.register(setup[1], func(): pass, func(): pass, func(): pass, 0)
+			RollbackLivenessServer.despawn(setup[1], 85)
+			sync_server._starve_inputs()
+			expect_empty(fills_of(sync_server, input), "Despawned")
+
+			RollbackLivenessServer.deregister(setup[1])
+			servers.simulation_server().deregister_node(state_node)
+			state_node.queue_free()
+			cleanup_starving(sync_server, setup)
+		)
+	)
+
 	define("synchronize_sync_state()", func():
 		test("should submit owned", func():
 			skip()
@@ -725,6 +842,52 @@ func record_refusals() -> Array:
 	_refusal_handler = func(peer: int, tick: int): result.append([peer, tick])
 	NetworkSynchronizationServer.on_input_refused.connect(_refusal_handler)
 	return result
+
+# An input node of peer 2 with starvation, controlling a node of ours
+func starving_input(sync_server: _NetworkSynchronizationServer, ticks: int) -> Array:
+	var input := StarvingInput.new()
+	Vest.get_tree().root.add_child.call_deferred(input)
+	await input.ready
+	input.set_multiplayer_authority(2)
+	var node := await get_node("controlled")
+	servers.simulation_server().register_rollback_input_for(node, input)
+	NetworkHistoryServer.register_rollback_input(input, ^"position")
+	sync_server.register_rollback_input(input, ^"position")
+	sync_server.set_input_starvation_for(input, ticks)
+	return [input, node]
+
+# Input of peer 2 for each of [param ticks], at (tick, [param y], 0)
+func ingest_inputs(sync_server: _NetworkSynchronizationServer, input: Node, ticks: Array, y: float) -> void:
+	for tick in ticks:
+		sync_server._ingest_input(2, _Snapshot.of(tick, [[input, ^"position", Vector3(tick, y, 0)]], [input]))
+
+# The tick of each input that starts a rewind, until the test ends
+func record_inputs(sync_server: _NetworkSynchronizationServer) -> Array:
+	var result := []
+	sync_server._on_input.connect(func(snapshot: _Snapshot): result.append(snapshot.tick))
+	return result
+
+func fills_of(sync_server: _NetworkSynchronizationServer, input: Node) -> Array:
+	var ticks := (sync_server._fills.get(input, {}) as Dictionary).keys()
+	ticks.sort()
+	return ticks
+
+# Each input refusal of [param sync_server] as [peer, tick]
+func record_server_refusals(sync_server: _NetworkSynchronizationServer) -> Array:
+	var result := []
+	sync_server.on_input_refused.connect(func(peer: int, tick: int): result.append([peer, tick]))
+	return result
+
+func cleanup_starving(sync_server: Node, setup: Array) -> void:
+	servers.simulation_server().deregister_node(setup[1])
+	cleanup(sync_server, setup)
+
+class StarvingInput extends Node3D:
+	var starved := []
+
+	func _rollback_starve(tick: int) -> void:
+		starved.append(tick)
+		position.y = 0
 
 # Set both the network tick and the reference clock to [param tick]
 func set_clock_tick(tick: int) -> void:
@@ -883,3 +1046,6 @@ class PeeredSynchronizationServer extends _NetworkSynchronizationServer:
 
 	func _get_peers() -> PackedInt32Array:
 		return peers
+
+	func _is_peer_connected(_node: Node, peer: int) -> bool:
+		return peers.has(peer)

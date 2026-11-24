@@ -49,6 +49,25 @@ their respective players.
 
 See [Property paths] on how to specify properties.
 
+*Input starvation ticks* keeps the nodes simulated when their owner's input
+goes missing, e.g. while the player's game hangs or its connection drops; 0, the
+default, disables it. A tick whose input can no longer arrive, because input
+*Input redundancy* ticks newer did, gets a copy of the input before it. Once the
+newest input is older than this many ticks, the owner counts as silent: every
+tick after its newest input is filled at once, and from then on each new tick
+as it is simulated, so the silence costs one rewind of about this many ticks.
+Before each such fill, the input node's `_rollback_starve(tick)` is called if it
+has one, so the game can adjust the copied input, e.g. release the triggers.
+The filled ticks' states are authoritative and sent to everyone. The first input
+that arrives again ends the silence: the fills from its tick on are replaced by
+the real input, the earlier ones stay, and real input for them, or for ticks
+before the silence, is refused. The owner is corrected once. Set it above the
+input lateness the supported connections show (see *Input lateness* in
+[NetworkPerformance]). Nothing is filled before the owner's first input, for
+nodes this peer does not own, dead or despawned nodes, or a disconnected owner.
+Without it, the nodes stand still until input arrives, then jump through the
+missed ticks.
+
 *Enable input broadcast* toggles whether input properties are broadcast to all
 peers, or only to the server. The default is *true* to support legacy
 behaviour. It is recommended to turn this off to lower bandwidth and lessen the
@@ -159,3 +178,4 @@ ticks.
 [NetworkRollback]: ../guides/network-rollback.md
 [Property paths]: ../guides/property-paths.md
 [rollback settings]: ../guides/network-rollback.md#settings
+[NetworkPerformance]: ../guides/network-performance.md

@@ -24,6 +24,7 @@ const SENT_STATE_BYTES_MONITOR: StringName = &"netfox/Sent rollback state bytes"
 const SENT_INPUT_BYTES_MONITOR: StringName = &"netfox/Sent input bytes"
 const SENT_SYNC_STATE_BYTES_MONITOR: StringName = &"netfox/Sent sync state bytes"
 const INPUTS_REFUSED_MONITOR: StringName = &"netfox/Inputs refused"
+const INPUTS_STARVED_MONITOR: StringName = &"netfox/Inputs starved"
 
 var _network_loop_start: float = 0
 var _network_loop_duration: float = 0
@@ -68,6 +69,9 @@ var _inputs_refused: int = 0
 var _inputs_refused_accum: int = 0
 var _inputs_refused_by_peer := {} # peer to total inputs refused
 var _states_refused_total: int = 0
+var _inputs_starved: int = 0
+var _inputs_starved_accum: int = 0
+var _inputs_starved_total: int = 0
 
 # Whether monitoring is enabled, cached
 var _enabled: bool = false
@@ -259,6 +263,20 @@ func push_input_refused(peer: int) -> void:
 func push_state_refused() -> void:
 	_states_refused_total += 1
 
+## Get the number of input ticks filled for starving inputs during the last
+## tick loop. See [method _NetworkSynchronizationServer.set_input_starvation_for].
+func get_inputs_starved() -> int:
+	return _inputs_starved
+
+## Get the number of input ticks filled for starving inputs since monitoring
+## started.
+func get_inputs_starved_total() -> int:
+	return _inputs_starved_total
+
+func push_inputs_starved(count: int) -> void:
+	_inputs_starved_accum += count
+	_inputs_starved_total += count
+
 ## Get the bytes of rollback state handed to [_NetworkCommandServer] during the
 ## last tick loop, full and diff states together.
 func get_sent_state_bytes() -> int:
@@ -302,6 +320,7 @@ func _ready() -> void:
 	Performance.add_custom_monitor(SENT_INPUT_BYTES_MONITOR, get_sent_input_bytes)
 	Performance.add_custom_monitor(SENT_SYNC_STATE_BYTES_MONITOR, get_sent_sync_state_bytes)
 	Performance.add_custom_monitor(INPUTS_REFUSED_MONITOR, get_inputs_refused)
+	Performance.add_custom_monitor(INPUTS_STARVED_MONITOR, get_inputs_starved)
 
 	NetworkTime.before_tick_loop.connect(_before_tick_loop)
 	NetworkTime.on_tick.connect(_on_network_tick)
@@ -333,6 +352,9 @@ func _after_tick_loop() -> void:
 
 	_inputs_refused = _inputs_refused_accum
 	_inputs_refused_accum = 0
+
+	_inputs_starved = _inputs_starved_accum
+	_inputs_starved_accum = 0
 
 	if NetworkTime.tick >= _input_lateness_window_end:
 		_input_lateness = _input_lateness_accum

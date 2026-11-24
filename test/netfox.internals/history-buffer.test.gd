@@ -85,3 +85,25 @@ func suite() -> void:
 			expect_equal(buffer.values(), ["hello", "world", "!"])
 		)
 	)
+
+	define("trim()", func():
+		test("should remove from a tick on", func():
+			var buffer := _HistoryBuffer.of(16, { 2: "a", 4: "b", 5: "c", 7: "d" })
+			buffer.trim(5)
+			expect_equal(buffer.values(), ["a", "b"])
+			expect_not(buffer.has_at(5))
+			expect_equal(buffer.get_latest_index_at(10), 4)
+			expect_equal(buffer.get_latest_at(10), "b")
+
+			buffer.set_at(8, "e")
+			expect_equal(buffer.values(), ["a", "b", "e"])
+			expect_equal(buffer.get_latest_at(6), "b")
+		)
+
+		test("should empty from its first tick", func():
+			var buffer := _HistoryBuffer.of(16, { 2: "a", 4: "b" })
+			buffer.trim(1)
+			expect(buffer.is_empty())
+		)
+	)
+

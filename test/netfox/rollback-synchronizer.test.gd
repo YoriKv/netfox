@@ -278,6 +278,28 @@ func suite():
 		)
 	)
 
+	define("input_starvation_ticks", func():
+		test("should set starvation for the input nodes", func():
+			make_spawn_synchronizer(0, 0)
+			spawn_rbs.input_properties = [":owner_value"]
+			spawn_rbs.input_starvation_ticks = 12
+			Vest.get_tree().root.add_child.call_deferred(spawn_root)
+			await spawn_root.ready
+
+			spawn_rbs.process_settings()
+			expect_equal(NetworkSynchronizationServer._starvation_ticks.get(spawn_root), 12)
+
+			spawn_rbs.input_starvation_ticks = 0
+			expect_not(NetworkSynchronizationServer._starvation_ticks.has(spawn_root))
+			spawn_rbs.input_starvation_ticks = 20
+			expect_equal(NetworkSynchronizationServer._starvation_ticks.get(spawn_root), 20)
+
+			spawn_root.remove_child(spawn_rbs)
+			expect_not(NetworkSynchronizationServer._starvation_ticks.has(spawn_root))
+			spawn_rbs.free()
+		)
+	)
+
 	define("get_last_known_state()", func():
 		test("should return -1 for no state", func(): todo())
 		test("should return latest", func(): todo())

@@ -93,6 +93,13 @@ count with their own tick. Per peer values are available with
 falling outside of the accepted range, see [NetworkRollback]'s settings.
 `get_inputs_refused_by(peer)` returns the total per peer.
 
+### Inputs starved
+
+*Inputs starved* counts the input ticks filled during the last tick loop for
+missing input, gaps and silences alike, see *Input starvation ticks* on
+[RollbackSynchronizer]. `get_inputs_starved_total()` returns the count since
+startup.
+
 ### Sent bytes
 
 *Sent rollback state bytes*, *Sent input bytes* and *Sent sync state bytes*
@@ -101,6 +108,7 @@ without the transport's overhead. Each command also counts its own bytes, see
 `Command.get_sent_bytes()`.
 
 [NetworkRollback]: ./network-rollback.md
+[RollbackSynchronizer]: ../nodes/rollback-synchronizer.md
 [NetworkCommandServer]: ./network-command-server.md
 [custom monitors]: https://docs.godotengine.org/en/latest/classes/class_performance.html#class-performance-method-add-custom-monitor
 [network tick loop]: ./network-time.md

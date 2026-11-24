@@ -420,6 +420,7 @@ func _rollback() -> void:
 	# Ask all rewindables to submit their earliest inputs
 	_resim_from = NetworkTime.tick
 	before_loop.emit()
+	NetworkSynchronizationServer._starve_inputs()
 
 	# Figure out where to start rollback from
 	var range_source = "notif"

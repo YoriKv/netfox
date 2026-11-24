@@ -275,6 +275,23 @@ func _find_corrections(snapshot: _Snapshot) -> Array:
 	NetworkPerformance.push_corrections(count)
 	return result
 
+# Remove the input of [param subject] from [param from_tick] on, filled by
+# starvation at [param ticks], which real input replaces; the states simulated
+# from those ticks for the [param controlled] nodes are no longer authoritative
+func _withdraw_input(subject: Object, from_tick: int, ticks: Array, controlled: Array) -> void:
+	_rb_input_history.trim_subject(subject, from_tick)
+	for tick in ticks:
+		var input_snapshot := _rb_input_snapshots.get_at(tick) as _Snapshot
+		if input_snapshot:
+			input_snapshot.erase_subject(subject)
+		var state_snapshot := _rb_state_snapshots.get_at(tick + 1) as _Snapshot
+		for node in controlled:
+			var recorded := _rb_state_history.get_snapshot(tick + 1, node)
+			if recorded:
+				recorded.set_auth(false)
+			if state_snapshot:
+				state_snapshot.set_auth(node, false)
+
 func _add_new_input(tick: int, subject: Object) -> void:
 	if not _new_inputs.has(tick):
 		_new_inputs[tick] = _Set.new()
