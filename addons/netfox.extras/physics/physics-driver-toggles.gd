@@ -3,6 +3,18 @@ extends Object
 class PhysicsDriverToggle:
 	const INACTIVE_SUFFIX := ".off"
 
+	# Toggles refer to each other's files through these, not by instancing each
+	# other: inner classes referring to each other form a reference cycle that
+	# leaks every loaded script at exit
+	const RAPIER_2D_FILES: Array[String] = [
+		"res://addons/netfox.extras/physics/rapier_driver.gd",
+		"res://addons/netfox.extras/physics/rapier_driver_2d.gd",
+	]
+	const RAPIER_3D_FILES: Array[String] = [
+		"res://addons/netfox.extras/physics/rapier_driver.gd",
+		"res://addons/netfox.extras/physics/rapier_driver_3d.gd",
+	]
+
 	func get_name() -> String:
 		return "???"
 
@@ -13,7 +25,10 @@ class PhysicsDriverToggle:
 		return []
 
 	func is_enabled() -> bool:
-		return get_files().all(func(it): return FileAccess.file_exists(it))
+		return _files_exist(get_files())
+
+	func _files_exist(files: Array[String]) -> bool:
+		return files.all(func(it): return FileAccess.file_exists(it))
 
 	func toggle() -> Array[String]:
 		var errors := get_error_messages()
@@ -42,15 +57,12 @@ class Rapier2DPhysicsDriverToggle extends PhysicsDriverToggle:
 		return "Rapier2D"
 
 	func get_files() -> Array[String]:
-		return [
-			"res://addons/netfox.extras/physics/rapier_driver.gd",
-			"res://addons/netfox.extras/physics/rapier_driver_2d.gd",
-		]
+		return RAPIER_2D_FILES
 
 	func get_error_messages() -> Array[String]:
 		var messages := [] as Array[String]
 
-		if Rapier3DPhysicsDriverToggle.new().is_enabled():
+		if _files_exist(RAPIER_3D_FILES):
 			messages.append("Disable the Rapier3D driver before enabling 2D!")
 
 		if not ClassDB.class_exists("RapierPhysicsServer2D"):
@@ -63,15 +75,12 @@ class Rapier3DPhysicsDriverToggle extends PhysicsDriverToggle:
 		return "Rapier3D"
 
 	func get_files() -> Array[String]:
-		return [
-			"res://addons/netfox.extras/physics/rapier_driver.gd",
-			"res://addons/netfox.extras/physics/rapier_driver_3d.gd",
-		]
+		return RAPIER_3D_FILES
 
 	func get_error_messages() -> Array[String]:
 		var messages := [] as Array[String]
 
-		if Rapier2DPhysicsDriverToggle.new().is_enabled():
+		if _files_exist(RAPIER_2D_FILES):
 			messages.append("Disable the Rapier2D driver before enabling 3D!")
 
 		if not ClassDB.class_exists("RapierPhysicsServer3D"):
