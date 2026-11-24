@@ -188,6 +188,44 @@ func suite() -> void:
 		)
 	)
 
+	define("erase_node_for()", func():
+		test("should refer by name again", func():
+			identity_server.register_node(node)
+			var identifier := identity_server._get_identifier_of(node)
+			var full_name := identifier.get_full_name()
+			identity_server._handle_ids(2, identity_server._packet_serializer.serialize({ full_name: 7 }))
+			identity_server._handle_ids(3, identity_server._packet_serializer.serialize({ full_name: 9 }))
+			expect(identifier.reference_for(2).has_id(), "Should refer by id before erase!")
+
+			identity_server.erase_node_for(node, 2)
+
+			expect_not(identifier.reference_for(2).has_id(), "Should refer by name to erased peer!")
+			expect(identifier.reference_for(3).has_id(), "Should still refer by id to other peer!")
+			expect_not(identity_server._identifier_by_id.has(2), "Should erase from ID cache!")
+		)
+
+		test("should accept new id", func():
+			identity_server.register_node(node)
+			var identifier := identity_server._get_identifier_of(node)
+			var full_name := identifier.get_full_name()
+			identity_server._handle_ids(2, identity_server._packet_serializer.serialize({ full_name: 7 }))
+
+			identity_server.erase_node_for(node, 2)
+			identity_server._handle_ids(2, identity_server._packet_serializer.serialize({ full_name: 8 }))
+
+			expect_equal(identifier.get_id_for(2), 8)
+		)
+
+		test("should erase queued push", func():
+			identity_server.register_node(node)
+			identity_server.queue_identifier_for(node, 2)
+
+			identity_server.erase_node_for(node, 2)
+
+			expect_not(identity_server._push_queue.has(2), "Should erase queued push!")
+		)
+	)
+
 	define("leaks", func():
 		test("should free identifiers on deregister", func():
 			# Warm up caches

@@ -93,6 +93,31 @@ func erase_peer(peer: int) -> void:
 	for identifier in _identifiers.values():
 		(identifier as _NetworkIdentifier).erase_id_for(peer)
 
+## Free the identity data of [param node] associated with [param peer]
+## [br][br]
+## Until [param peer] sends its ID for [param node] again, [param node] is
+## referred to by its full name in packets sent to [param peer]. Call this when
+## [param peer] frees its copy of [param node] while the local one stays, e.g.
+## when the node leaves the peer's relevance, so the ID of the freed copy is not
+## used for the one [param peer] makes later.
+func erase_node_for(node: Node, peer: int) -> void:
+	var identifier := _get_identifier_of(node)
+	if not identifier:
+		return
+
+	if identifier.has_id_for(peer):
+		var cache := _identifier_by_id.get(peer, {}) as Dictionary
+		cache.erase(identifier.get_id_for(peer))
+		if cache.is_empty():
+			_identifier_by_id.erase(peer)
+		identifier.erase_id_for(peer)
+
+	if _push_queue.has(peer):
+		var queue := _push_queue[peer] as Dictionary
+		queue.erase(identifier.get_full_name())
+		if queue.is_empty():
+			_push_queue.erase(peer)
+
 ## Clear all identities
 func clear() -> void:
 	_identifiers.clear()
