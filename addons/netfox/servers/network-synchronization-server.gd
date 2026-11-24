@@ -162,6 +162,28 @@ func reset() -> void:
 	_rb_latest_received_state.clear()
 	_last_sync_state_sent = _Snapshot.new(0)
 
+## Ingest rollback [param input] for [param subject] at [param tick], as if it
+## was received from the subject's authority
+## [br][br]
+## The [param input] maps the subject's property paths to their values, like
+## [method _NetworkHistoryServer.get_rollback_input_at] returns them. It is
+## merged into the history, triggering a resimulation if it's new.
+## [br][br]
+## Useful to carry input between nodes in the same process, e.g. in tests.
+func inject_rollback_input(subject: Node, tick: int, input: Dictionary) -> void:
+	_ingest_input(subject.get_multiplayer_authority(), _make_subject_snapshot(subject, tick, input))
+
+## Ingest rollback [param state] for [param subject] at [param tick], as if it
+## was received from the subject's authority
+## [br][br]
+## The [param state] maps the subject's property paths to their values, like
+## [method _NetworkHistoryServer.get_rollback_state_at] returns them. It is
+## merged into the history, triggering a resimulation if it changes anything.
+## [br][br]
+## Useful to carry state between nodes in the same process, e.g. in tests.
+func inject_rollback_state(subject: Node, tick: int, state: Dictionary) -> void:
+	_ingest_state(subject.get_multiplayer_authority(), _make_subject_snapshot(subject, tick, state))
+
 ## Return the tick of the newest authoritative rollback state received for
 ## [param subject], or -1 if none was received.
 ## [br][br]
@@ -410,11 +432,7 @@ func _handle_input(sender: int, data: PackedByteArray) -> void:
 	var snapshots := _redundant_serializer.read_from(sender, _rb_input_properties, buffer, true)
 
 	for snapshot in snapshots:
-		snapshot.sanitize(sender)
-
-		_logger.trace("Ingesting input: %s", [snapshot])
-		if NetworkHistoryServer._merge_rollback_input(snapshot):
-			_on_input.emit(snapshot)
+		_ingest_input(sender, snapshot)
 
 func _handle_full_state(sender: int, data: PackedByteArray) -> void:
 	var buffer := StreamPeerBuffer.new()
@@ -452,6 +470,20 @@ func _handle_diff_sync(sender: int, data: PackedByteArray) -> void:
 
 	NetworkHistoryServer._merge_synchronizer_state(snapshot)
 	_logger.trace("Ingested sync diff: %s", [snapshot])
+
+func _make_subject_snapshot(subject: Node, tick: int, values: Dictionary) -> _Snapshot:
+	var snapshot := _Snapshot.new(tick)
+	for property in values:
+		snapshot.set_property(subject, property, values[property])
+	snapshot.set_auth(subject, true)
+	return snapshot
+
+func _ingest_input(sender: int, snapshot: _Snapshot) -> void:
+	snapshot.sanitize(sender)
+
+	_logger.trace("Ingesting input: %s", [snapshot])
+	if NetworkHistoryServer._merge_rollback_input(snapshot):
+		_on_input.emit(snapshot)
 
 func _ingest_state(sender: int, snapshot: _Snapshot) -> void:
 	snapshot.sanitize(sender)

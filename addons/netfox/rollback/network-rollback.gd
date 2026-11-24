@@ -117,6 +117,27 @@ var tick: int:
 	set(v):
 		push_error("Trying to set read-only variable tick")
 
+## The first tick simulated by the current rollback loop, or the last one
+## outside of rollback.
+## [br][br]
+## [i]read-only[/i]
+var loop_from: int:
+	get:
+		return _rollback_from
+	set(v):
+		push_error("Trying to set read-only variable loop_from")
+
+## The tick up to which the current rollback loop simulates, or the last one
+## outside of rollback. This tick itself is not simulated, but the state
+## recorded for it is the result of simulating the tick before it.
+## [br][br]
+## [i]read-only[/i]
+var loop_to: int:
+	get:
+		return _rollback_to
+	set(v):
+		push_error("Trying to set read-only variable loop_to")
+
 ## Event emitted before running the network rollback loop.
 signal before_loop()
 

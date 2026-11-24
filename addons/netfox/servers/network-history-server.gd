@@ -135,6 +135,20 @@ func get_input_age_for(subjects: Array, tick: int) -> int:
 	else:
 		return tick - latest_input
 
+## Return the rollback input recorded for [param subject] at [param tick]
+## [br][br]
+## The result maps the subject's property paths to their values. It is empty if
+## no authoritative input was recorded for [param subject] at [param tick].
+func get_rollback_input_at(subject: Node, tick: int) -> Dictionary:
+	return _get_auth_values(_rb_input_history, subject, tick)
+
+## Return the rollback state recorded for [param subject] at [param tick]
+## [br][br]
+## The result maps the subject's property paths to their values. It is empty if
+## no authoritative state was recorded for [param subject] at [param tick].
+func get_rollback_state_at(subject: Node, tick: int) -> Dictionary:
+	return _get_auth_values(_rb_state_history, subject, tick)
+
 ## Record currently registered rollback state properties for [param subject] at
 ## [param tick].
 func push_rollback_state(subject: Node, tick: int) -> void:
@@ -312,6 +326,16 @@ func _can_merge_tick(tick: int, history: _PerObjectHistory) -> bool:
 		_sync_history: _logger.warning("Sync state being merged is too old! (@%d)", [tick])
 		_: _logger.warning("Snapshot being merged is too old! (@%d)", [tick])
 	return false
+
+func _get_auth_values(history: _PerObjectHistory, subject: Node, tick: int) -> Dictionary:
+	var result := {}
+	if not history.is_auth(tick, subject):
+		return result
+
+	var snapshot := history.get_latest_snapshot(tick, subject)
+	for property in snapshot.properties():
+		result[property] = snapshot.get_value(property)
+	return result
 
 func _get_latest_for(subjects: Array, tick: int, history: _PerObjectHistory) -> int:
 	var latest := -1

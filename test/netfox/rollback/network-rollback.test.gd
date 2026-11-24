@@ -72,6 +72,16 @@ func suite() -> void:
 		)
 	)
 
+	define("loop range", func():
+		test("should expose rollback range", func():
+			network_rollback._rollback_from = 3
+			network_rollback._rollback_to = 7
+
+			expect_equal(network_rollback.loop_from, 3)
+			expect_equal(network_rollback.loop_to, 7)
+		)
+	)
+
 	define("_handle_tick_jump()", func():
 		test("should advance the earliest valid history tick", func():
 			# Given

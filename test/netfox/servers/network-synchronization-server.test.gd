@@ -226,6 +226,39 @@ func suite() -> void:
 		)
 	)
 
+	define("inject_rollback_state()", func():
+		test("should ingest as received", func():
+			var node := await get_node()
+			node.set_multiplayer_authority(2)
+			var sync_server := servers.synchronization_server()
+			var received := []
+			sync_server._on_state.connect(func(snapshot: _Snapshot): received.append(snapshot.tick))
+
+			sync_server.inject_rollback_state(node, 6, { ^"position": Vector3.ONE })
+
+			expect_equal(NetworkHistoryServer.get_rollback_state_at(node, 6), { ^"position": Vector3.ONE })
+			expect_equal(received, [6])
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), 6)
+			NetworkHistoryServer.deregister(node)
+		)
+	)
+
+	define("inject_rollback_input()", func():
+		test("should ingest as received", func():
+			var node := await get_node()
+			node.set_multiplayer_authority(2)
+			var sync_server := servers.synchronization_server()
+			var received := []
+			sync_server._on_input.connect(func(snapshot: _Snapshot): received.append(snapshot.tick))
+
+			sync_server.inject_rollback_input(node, 6, { ^"position": Vector3.ONE })
+
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(node, 6), { ^"position": Vector3.ONE })
+			expect_equal(received, [6])
+			NetworkHistoryServer.deregister(node)
+		)
+	)
+
 	define("synchronize_sync_state()", func():
 		test("should submit owned", func():
 			skip()

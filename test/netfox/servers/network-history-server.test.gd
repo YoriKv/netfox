@@ -140,6 +140,44 @@ func suite() -> void:
 			expect_equal(NetworkHistoryServer.get_latest_state_tick_for([subject], 6), 6)
 		)
 	)
+	define("get_rollback_input_at()", func():
+		test("should return recorded", func():
+			var node := await get_node()
+			var history_server := servers.history_server()
+			history_server.register_rollback_input(node, ^"position")
+			node.position = Vector3.ONE
+
+			history_server._record_rollback_input(4)
+
+			expect_equal(history_server.get_rollback_input_at(node, 4), { ^"position": Vector3.ONE })
+			expect_empty(history_server.get_rollback_input_at(node, 5))
+			node.queue_free()
+		)
+	)
+
+	define("get_rollback_state_at()", func():
+		test("should return authoritative", func():
+			var node := await get_node()
+			var history_server := servers.history_server()
+
+			history_server._merge_rollback_state(_Snapshot.of(3, [[node, "position", Vector3.ONE]], [node]))
+
+			expect_equal(history_server.get_rollback_state_at(node, 3), { ^"position": Vector3.ONE })
+			node.queue_free()
+		)
+
+		test("should be empty for non-authoritative", func():
+			var node := await get_node()
+			var history_server := servers.history_server()
+
+			history_server._merge_rollback_state(_Snapshot.of(3, [[node, "position", Vector3.ONE]], []))
+
+			expect_empty(history_server.get_rollback_state_at(node, 3))
+			expect_empty(history_server.get_rollback_state_at(node, 4))
+			node.queue_free()
+		)
+	)
+
 	define("reset()", func():
 		test("should record early ticks after reset", func():
 			var history_server := servers.history_server()
