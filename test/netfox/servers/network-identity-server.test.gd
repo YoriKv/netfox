@@ -126,3 +126,24 @@ func suite() -> void:
 			expect_null(identity_server._resolve_reference(1, reference))
 		)
 	)
+
+	define("leaks", func():
+		test("should free identifiers on deregister", func():
+			# Warm up caches
+			_register_and_deregister()
+
+			var objects_before := Performance.get_monitor(Performance.OBJECT_COUNT)
+			for i in 64:
+				_register_and_deregister()
+
+			expect_equal(Performance.get_monitor(Performance.OBJECT_COUNT), objects_before)
+			expect(identity_server._identifier_by_id.is_empty(), "ID cache should be empty")
+		)
+	)
+
+# Register node, receive an ID for it from a peer, then deregister it
+func _register_and_deregister() -> void:
+	identity_server.register_node(node)
+	var full_name := identity_server._get_identifier_of(node).get_full_name()
+	identity_server._handle_ids(2, identity_server._packet_serializer.serialize({ full_name: 7 }))
+	identity_server.deregister_node(node)

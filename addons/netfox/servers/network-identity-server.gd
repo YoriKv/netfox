@@ -150,8 +150,6 @@ func _register(what: Object, path: String) -> void:
 	_identifier_by_name[identifier.get_full_name()] = identifier
 	_identifier_by_local_id[identifier.get_local_id()] = identifier
 
-	identifier.on_id.connect(func(peer: int, id: int): _update_id_cache(identifier, peer, id))
-
 func _deregister(what: Object) -> void:
 	if not _identifiers.has(what):
 		return
@@ -201,3 +199,4 @@ func _handle_ids(sender: int, data: PackedByteArray) -> void:
 			_logger.debug("Received identifier for unknown object with full name %s, id #%d", [full_name, id])
 			continue
 		identifier.set_id_for(sender, id)
+		_update_id_cache(identifier, sender, id)
