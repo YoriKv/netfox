@@ -263,7 +263,126 @@ func suite() -> void:
 		test("should submit owned", func():
 			skip()
 		)
+
+		test("should send nothing when nothing changed", func():
+			var sync_server := await get_peered_server([2])
+			var node := await get_node("subject")
+			register_sync_state(sync_server, node)
+
+			sync_tick(sync_server, node, 1, Vector3.ONE)
+			var first := sent_diffs(sync_server, 2)
+			sync_tick(sync_server, node, 2, Vector3.ONE)
+
+			expect_equal(first.size(), 1)
+			expect_empty(sent_diffs(sync_server, 2).slice(first.size()))
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send only changed subjects", func():
+			var sync_server := await get_peered_server([2])
+			var moving := await get_node("moving")
+			var resting := await get_node("resting")
+			register_sync_state(sync_server, moving)
+			register_sync_state(sync_server, resting)
+
+			moving.position = Vector3.ZERO
+			resting.position = Vector3.ONE
+			sync_tick(sync_server, null, 1)
+			moving.position = Vector3.UP
+			sync_tick(sync_server, null, 2)
+
+			var diffs := sent_diffs(sync_server, 2)
+			var last := decode_diff(sync_server, diffs[-1], [moving, resting])
+			expect_equal(last, _Snapshot.of(2, [[moving, ^"position", Vector3.UP]], [moving]))
+
+			cleanup(sync_server, [moving, resting])
+		)
+
+		test("should send subject in full once visible", func():
+			var sync_server := await get_peered_server([2])
+			var node := await get_node("subject")
+			register_sync_state(sync_server, node)
+
+			var filter := PeerVisibilityFilter.new()
+			filter.default_visibility = false
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_server.register_visibility_filter(node, filter)
+
+			sync_tick(sync_server, node, 1, Vector3.ONE)
+			sync_tick(sync_server, node, 2, Vector3.ONE)
+			expect_empty(sent_diffs(sync_server, 2))
+
+			# Visible from now on, unchanged
+			filter.default_visibility = true
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_tick(sync_server, node, 3, Vector3.ONE)
+			sync_tick(sync_server, node, 4, Vector3.ONE)
+
+			var diffs := sent_diffs(sync_server, 2)
+			expect_equal(diffs.size(), 1)
+			expect_equal(decode_diff(sync_server, diffs[0], [node]),
+				_Snapshot.of(3, [[node, ^"position", Vector3.ONE]], [node]))
+
+			# Hidden, then visible again, still unchanged
+			filter.default_visibility = false
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_tick(sync_server, node, 5, Vector3.ONE)
+			filter.default_visibility = true
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_tick(sync_server, node, 6, Vector3.ONE)
+
+			diffs = sent_diffs(sync_server, 2)
+			expect_equal(diffs.size(), 2)
+			expect_equal(decode_diff(sync_server, diffs[1], [node]),
+				_Snapshot.of(6, [[node, ^"position", Vector3.ONE]], [node]))
+
+			filter.free()
+			cleanup(sync_server, [node])
+		)
 	)
+
+func get_peered_server(peers: Array) -> PeeredSynchronizationServer:
+	var sync_server := PeeredSynchronizationServer.new(servers.command_server(), servers.history_server(), servers.identity_server(), servers.simulation_server())
+	sync_server.peers = PackedInt32Array(peers)
+	sync_server._sync_full_scheduler = _IntervalScheduler.new(0) # Only diffs
+	servers.add_child.call_deferred(sync_server)
+	await sync_server.ready
+	return sync_server
+
+func register_sync_state(sync_server: _NetworkSynchronizationServer, node: Node) -> void:
+	servers.identity_server().register_node(node)
+	sync_server.register_sync_state(node, ^"position")
+	NetworkHistoryServer.register_sync_state(node, ^"position")
+
+# Record and send sync state for [param tick], with [param node] at [param position]
+func sync_tick(sync_server: _NetworkSynchronizationServer, node: Node3D, tick: int, position: Vector3 = Vector3.ZERO) -> void:
+	if node:
+		node.position = position
+	NetworkHistoryServer._record_sync_state(tick)
+	sync_server._synchronize_sync_state(tick)
+
+func sent_diffs(sync_server: _NetworkSynchronizationServer, peer: int) -> Array[PackedByteArray]:
+	var result: Array[PackedByteArray] = []
+	for command in servers.command_server().commands_sent:
+		if command[0] == sync_server._cmd_diff_sync._idx and command[2] == peer:
+			result.append(command[1])
+	return result
+
+func decode_diff(sync_server: _NetworkSynchronizationServer, data: PackedByteArray, nodes: Array) -> _Snapshot:
+	var properties := _PropertyPool.new()
+	for node in nodes:
+		properties.add(node, ^"position")
+	var buffer := StreamPeerBuffer.new()
+	buffer.data_array = data
+	var serializer := _SparseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+	return serializer.read_from(1, properties, buffer)
+
+func cleanup(sync_server: Node, nodes: Array) -> void:
+	for node in nodes:
+		NetworkHistoryServer.deregister(node)
+		node.queue_free()
+	sync_server.queue_free()
 
 func get_node(name: String = "") -> Node3D:
 	var node := Node3D.new()
@@ -273,3 +392,9 @@ func get_node(name: String = "") -> Node3D:
 	if name: node.name = name
 
 	return node
+
+class PeeredSynchronizationServer extends _NetworkSynchronizationServer:
+	var peers := PackedInt32Array()
+
+	func _get_peers() -> PackedInt32Array:
+		return peers

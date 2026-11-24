@@ -43,6 +43,7 @@ var _rb_sent_state_history := {} # peer to _HistoryBuffer of _Snapshot
 var _rb_latest_received_state := {} # Node to tick
 
 var _last_sync_state_sent := _Snapshot.new(0)
+var _sync_sent_subjects := {} # peer to _Set of subjects sent since visible
 var _sync_enable_diffs := ProjectSettings.get_setting("netfox/state_synchronizer/enable_diff_states", true) as bool
 var _sync_full_interval := ProjectSettings.get_setting("netfox/state_synchronizer/full_state_interval", 24) as int
 var _sync_full_scheduler := _IntervalScheduler.new(_sync_full_interval)
@@ -142,6 +143,8 @@ func deregister(node: Node) -> void:
 	_visibility_filters.erase(node)
 	_schemas.erase_subject(node)
 	_rb_latest_received_state.erase(node)
+	for sent_subjects in _sync_sent_subjects.values():
+		(sent_subjects as _Set).erase(node)
 
 	# NOTE: _rb_sent_state_history may contain snapshots with invalid subjects
 	# NOTE: Iterating all sent snapshots for `node` may be slow and useless
@@ -151,6 +154,7 @@ func deregister(node: Node) -> void:
 ## Called by default when a peer leaves
 func erase_peer(peer: int) -> void:
 	_rb_sent_state_history.erase(peer)
+	_sync_sent_subjects.erase(peer)
 
 ## Forget what was sent to other peers, while keeping the registered properties
 ## [br][br]
@@ -161,6 +165,7 @@ func reset() -> void:
 	_rb_sent_state_history.clear()
 	_rb_latest_received_state.clear()
 	_last_sync_state_sent = _Snapshot.new(0)
+	_sync_sent_subjects.clear()
 
 ## Ingest rollback [param input] for [param subject] at [param tick], as if it
 ## was received from the subject's authority
@@ -355,34 +360,58 @@ func _synchronize_sync_state(tick: int) -> void:
 	if not _sync_enable_diffs:
 		is_full = true
 
-	if is_full:
-		# Send full states
-		for peer in multiplayer.get_peers():
-			var filter := func(subject): return _is_node_visible_to(peer, subject)
+	var diff: _Snapshot = null
+	if not is_full:
+		diff = _Snapshot.make_patch(_last_sync_state_sent, snapshot)
 
+	for peer in _get_peers():
+		# A diff is relative to the previous tick's state, which a subject the peer
+		# could not see was not sent with - send such subjects in full first
+		var sent_subjects := _get_peer_sync_subjects(peer)
+		var peer_diff := diff
+		for subject in _sync_owned_state_properties.get_subjects_raw():
+			if not _is_node_visible_to(peer, subject):
+				sent_subjects.erase(subject)
+				continue
+			if sent_subjects.has(subject) or not snapshot.is_auth(subject):
+				continue
+
+			sent_subjects.add(subject)
+			if not is_full:
+				if peer_diff == diff:
+					peer_diff = diff.duplicate()
+				snapshot.copy_subject_to(subject, peer_diff)
+				peer_diff.set_auth(subject, true)
+
+		var filter := func(subject): return sent_subjects.has(subject)
+
+		if is_full:
 			var packets := _dense_serializer.write_for(peer, snapshot, _sync_owned_state_properties, filter)
 			for packet in packets:
 				_cmd_full_sync.send(packet, peer)
 
 			NetworkPerformance.push_full_state_props(snapshot.size())
 			NetworkPerformance.push_sent_state_props(snapshot.size())
-	else:
-		var diff := _Snapshot.make_patch(_last_sync_state_sent, snapshot)
-
-		# Send diffs
-		for peer in multiplayer.get_peers():
-			var filter := func(subject): return _is_node_visible_to(peer, subject)
-
-			var packets := _sparse_serializer.write_for(peer, diff, _sync_owned_state_properties, filter)
+		else:
+			# Nothing is sent if no visible subject changed
+			var packets := _sparse_serializer.write_for(peer, peer_diff, _sync_owned_state_properties, filter)
 			for packet in packets:
 				_cmd_diff_sync.send(packet, peer)
 
 			NetworkPerformance.push_full_state_props(snapshot.size())
-			NetworkPerformance.push_sent_state_props(diff.size())
+			NetworkPerformance.push_sent_state_props(peer_diff.size())
 
 	# Remember last sent state for diffing
 	# NOTE: This is a shared instance, theoretically shouldn't screw things up
 	_last_sync_state_sent = snapshot
+
+func _get_peers() -> PackedInt32Array:
+	return multiplayer.get_peers()
+
+func _get_peer_sync_subjects(peer: int) -> _Set:
+	if not _sync_sent_subjects.has(peer):
+		_sync_sent_subjects[peer] = _Set.new()
+	return _sync_sent_subjects[peer]
 
 func _init(
 		p_command_server: _NetworkCommandServer = null,

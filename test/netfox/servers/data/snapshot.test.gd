@@ -52,6 +52,24 @@ func suite() -> void:
 			expect_equal(_Snapshot.make_patch(from, to), expected)
 		)
 
+		test("should leave out unchanged subject", func():
+			var from := _Snapshot.of(0, [
+				[node, "position", Vector3.ZERO],
+				[other_node, "position", Vector3.ZERO]
+			], [node, other_node])
+
+			var to := _Snapshot.of(1, [
+				[node, "position", Vector3.ONE],
+				[other_node, "position", Vector3.ZERO]
+			], [node, other_node])
+
+			var expected := _Snapshot.of(1, [
+				[node, "position", Vector3.ONE]
+			], [node])
+
+			expect_equal(_Snapshot.make_patch(from, to), expected)
+		)
+
 		test("patch should yield `to` on merge", func():
 			var from := _Snapshot.of(0, [
 				[node, "position", Vector3.ZERO],

@@ -7,6 +7,8 @@ var tick: int
 var _data := {} # object to (property to variant)
 var _auth_subjects := _Set.new()
 
+# The patch holds only the auth subjects of `to` with a changed property, so an
+# unchanged subject is left out of a diff state
 static func make_patch(from: _Snapshot, to: _Snapshot, tick: int = to.tick) -> _Snapshot:
 	var patch := _Snapshot.new(tick)
 
@@ -17,12 +19,16 @@ static func make_patch(from: _Snapshot, to: _Snapshot, tick: int = to.tick) -> _
 		if not to.is_auth(subject):
 			continue
 
-		for property in to._data[subject]:
+		var to_props := to._data[subject] as Dictionary
+		var from_props := from._data.get(subject, {}) as Dictionary
+		var changed := false
+		for property in to_props:
 			# Target snapshot has different value, patch it
-			if not from.has_property(subject, property) or \
-				from.get_property(subject, property) != to.get_property(subject, property):
-				patch.set_property(subject, property, to.get_property(subject, property))
-		patch.set_auth(subject, to.is_auth(subject))
+			if not from_props.has(property) or from_props[property] != to_props[property]:
+				patch.set_property(subject, property, to_props[property])
+				changed = true
+		if changed:
+			patch.set_auth(subject, true)
 
 	return patch
 
