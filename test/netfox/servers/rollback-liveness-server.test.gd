@@ -118,6 +118,21 @@ func suite() -> void:
 		)
 	)
 
+	define("deregister()", func():
+		test("should forget subject", func():
+			register_subject(subject)
+			liveness_server.despawn(subject, death_tick)
+			liveness_server.restore_liveness(death_tick + 1)
+
+			liveness_server.deregister(subject)
+
+			expect_not(liveness_server.is_registered(subject), "Should not be registered!")
+			expect_empty(liveness_server._spawn_tick)
+			expect_empty(liveness_server._despawn_tick)
+			expect_empty(liveness_server._applied_liveness)
+		)
+	)
+
 func register_subject(p_subject: LivenessAwareNode, p_spawn_tick: int = spawn_tick) -> void:
 	liveness_server.register(p_subject, p_subject._rollback_spawn, p_subject._rollback_despawn, p_subject._rollback_destroy, p_spawn_tick)
 

@@ -59,6 +59,7 @@ func deregister(subject: Node) -> void:
 	_destroy_callback.erase(subject)
 	_spawn_tick.erase(subject)
 	_despawn_tick.erase(subject)
+	_applied_liveness.erase(subject)
 
 ## Return true if [param subject] is alive at [param tick].
 ## [br][br]
