@@ -345,6 +345,10 @@ func _ready() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_EDITOR_PRE_SAVE:
 		update_configuration_warnings()
+	elif what == NOTIFICATION_PREDELETE:
+		# The visibility filter is added as a child only on entering the tree
+		if is_instance_valid(visibility_filter) and not visibility_filter.get_parent():
+			visibility_filter.free()
 
 func _enter_tree() -> void:
 	if Engine.is_editor_hint():

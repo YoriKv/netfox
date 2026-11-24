@@ -107,6 +107,15 @@ func suite():
 		)
 	)
 
+	define("visibility filter", func():
+		test("should be freed with synchronizer outside tree", func():
+			var orphans_before := Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT)
+			for i in 16:
+				RollbackSynchronizer.new().free()
+			expect_equal(Performance.get_monitor(Performance.OBJECT_ORPHAN_NODE_COUNT), orphans_before)
+		)
+	)
+
 	# Messy to set up, keeping cases for later
 	define("Input age and predicting", func():
 		test("should return -1 on no input", func(): todo())

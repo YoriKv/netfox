@@ -130,6 +130,10 @@ func clear_schema() -> void:
 func _notification(what) -> void:
 	if what == NOTIFICATION_EDITOR_PRE_SAVE:
 		update_configuration_warnings()
+	elif what == NOTIFICATION_PREDELETE:
+		# The visibility filter is added as a child only on entering the tree
+		if is_instance_valid(visibility_filter) and not visibility_filter.get_parent():
+			visibility_filter.free()
 
 func _get_configuration_warnings() -> PackedStringArray:
 	if not root:
