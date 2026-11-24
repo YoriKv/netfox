@@ -31,3 +31,21 @@ func suite() -> void:
 			expect_equal(network_time.tick, network_time.seconds_to_ticks(clock_time))
 		)
 	)
+
+	define("max_ticks_per_frame", func():
+		test("should be settable", func():
+			network_time._next_tick_time = 0.
+			network_time._last_process_time = network_time.ticktime * 4.
+
+			network_time.max_ticks_per_frame = 1
+
+			expect_equal(network_time.max_ticks_per_frame, 1)
+			expect_equal(network_time._get_ticks_in_loop(), 1)
+		)
+
+		test("should reject less than 1", func():
+			network_time.max_ticks_per_frame = 3
+			network_time.max_ticks_per_frame = 0
+			expect_equal(network_time.max_ticks_per_frame, 3)
+		)
+	)

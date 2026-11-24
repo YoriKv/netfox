@@ -39,12 +39,17 @@ var sync_to_physics: bool:
 ## results in even more ticks and so on, this setting is an upper limit on how
 ## many ticks can be simulated in a single go.
 ## [br][br]
-## [i]read-only[/i], you can change this in the project settings
+## Defaults to the project setting. It can be changed at runtime, e.g. to run
+## at most one tick per frame where no clock needs to be caught up with, such
+## as offline or in tests. Must be at least 1.
 var max_ticks_per_frame: int:
 	get:
 		return _max_ticks_per_frame
 	set(v):
-		push_error("Trying to set read-only variable max_ticks_per_frame")
+		if v < 1:
+			_logger.error("Trying to set max_ticks_per_frame to %d, must be at least 1", [v])
+			return
+		_max_ticks_per_frame = v
 
 ## Current network time in seconds.
 ## [br][br]
