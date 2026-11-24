@@ -41,6 +41,7 @@ func before_case(__) -> void:
 
 func after_case(__) -> void:
 	NetworkRollback._resimulate_on_remote_state = true
+	NetworkRollback.remote_state_interacts = Callable()
 	for node in [remote, own, remote_input, own_input]:
 		RollbackSimulationServer.deregister_node(node)
 		NetworkHistoryServer.deregister(node)
@@ -116,15 +117,74 @@ func suite() -> void:
 		)
 	)
 
+	define("remote_state_interacts", func():
+		test("should resimulate a state it says interacts, still carrying it", func():
+			NetworkRollback._resimulate_on_remote_state = false
+			var asked := record_interacts(true)
+			record_remote(range(0, 9), Vector3.ZERO)
+
+			expect(merge(5, remote, Vector3.ONE))
+			expect_equal(asked, [[remote, 5, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE }]],
+				"Asked with the state this peer had for the tick")
+			expect_equal(remote_values([7]), [Vector3.ONE])
+		)
+
+		test("should carry a state it says does not interact, starting no resimulation", func():
+			NetworkRollback._resimulate_on_remote_state = false
+			var asked := record_interacts(false)
+			record_remote(range(0, 9), Vector3.ZERO)
+
+			expect_not(merge(5, remote, Vector3.ONE))
+			expect_equal(asked, [[remote, 5, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE }]])
+			expect_equal(remote_values([7]), [Vector3.ONE])
+		)
+
+		test("should not be asked for a node this peer simulates or a state that changes nothing", func():
+			NetworkRollback._resimulate_on_remote_state = false
+			var asked := record_interacts(true)
+			record_remote(range(0, 9), Vector3.ZERO)
+			NetworkHistoryServer._rb_state_history.set_property(4, own, ^"position", Vector3.ZERO)
+
+			merge(4, own, Vector3.ONE)
+			merge(4, remote, Vector3.ZERO)
+
+			expect_empty(asked)
+		)
+
+		test("should not be asked with the setting on", func():
+			var asked := record_interacts(false)
+			record_remote(range(0, 9), Vector3.ZERO)
+
+			expect(merge(5, remote, Vector3.ONE))
+			expect_empty(asked)
+		)
+
+		test("should make the next loop start at the state's tick", func():
+			for interacts in [true, false]:
+				var events := []
+				for loop in 10:
+					events.append([1, []])
+				events.append([1, [["remote", 4, Vector3.ONE, Vector3.ONE]]])
+				events.append([1, []])
+				NetworkRollback.remote_state_interacts = func(_node, _tick, _previous): return interacts
+				run_session(events, false, false)
+				NetworkRollback.remote_state_interacts = Callable()
+
+				expect_equal(_loop_starts.back(), 4 if interacts else 11, "Interacts: %s" % [interacts])
+		)
+	)
+
 	define("against a full resimulation", func():
 		test("should leave every tick restoring the newest full state received at or before it", func():
 			for seed in range(1, 9):
 				var events := random_session(seed, 48, false)
 				var resimulated := run_session(events, true, false)
 				var carried := run_session(events, false, false)
+				var asked := run_session(events, false, false, seed)
 
 				for loop in resimulated.size():
 					expect_equal(carried[loop], resimulated[loop], "Seed %d, loop %d" % [seed, loop])
+					expect_equal(asked[loop], resimulated[loop], "Seed %d, loop %d, interacting at random" % [seed, loop])
 				expect_equal(carried.back(), received_by_tick(events.slice(0, -1), 48), "Seed %d: the newest state at or before each tick" % [seed])
 				expect(_rollback_ticks[false] < _rollback_ticks[true], "Seed %d: fewer rollback ticks" % [seed])
 		)
@@ -134,9 +194,28 @@ func suite() -> void:
 				var events := random_session(seed, 48, true)
 				var resimulated := run_session(events, true, true)
 				var carried := run_session(events, false, false)
+				var asked := run_session(events, false, false, seed)
 
 				for loop in resimulated.size():
 					expect_equal(carried[loop], resimulated[loop], "Seed %d, loop %d" % [seed, loop])
+					expect_equal(asked[loop], resimulated[loop], "Seed %d, loop %d, interacting at random" % [seed, loop])
+				expect(_interacting > 0 and _interacting < _asked, "Seed %d: answered both ways" % [seed])
+		)
+
+		test("should leave this peer's nodes as resimulating after each state when it answers whether they met the state", func():
+			for seed in range(21, 29):
+				var events := random_session(seed, 48, true)
+				var resimulated := run_session(events, true, true, -1, true)
+				run_session(events, true, false)
+				NetworkRollback.remote_state_interacts = func(node: Node, tick: int, previous: Dictionary) -> bool:
+					var received := NetworkHistoryServer.get_rollback_state_at(node, tick)
+					return absf(received[^"position"].x) <= OwnNode.REACH or absf(previous[^"position"].x) <= OwnNode.REACH
+				var interacting := run_session(events, false, false, -1, true)
+				NetworkRollback.remote_state_interacts = Callable()
+
+				for loop in resimulated.size():
+					expect_equal(interacting[loop], resimulated[loop], "Seed %d, loop %d" % [seed, loop])
+				expect(_rollback_ticks[false] < _rollback_ticks[true], "Seed %d: fewer rollback ticks" % [seed])
 		)
 
 		test("should run only what this peer's own nodes need", func():
@@ -179,11 +258,23 @@ func random_session(seed: int, loops: int, varied: bool) -> Array:
 
 # Runs [param events] as a client would, a tick loop each, with the states
 # received after it; with [param loop_per_state], resimulating after each state
-# as well. Returns the remote node's history after each tick loop: what each
-# tick restores, and its authoritative ticks
-func run_session(events: Array, resimulate: bool, loop_per_state: bool) -> Array:
+# as well; with [param interacts_seed], remote_state_interacts answers at random.
+# Returns the remote node's history after each tick loop: what each tick
+# restores, and its authoritative ticks
+func run_session(events: Array, resimulate: bool, loop_per_state: bool, interacts_seed: int = -1, own_history: bool = false) -> Array:
 	reset_session()
 	NetworkRollback._resimulate_on_remote_state = resimulate
+	_asked = 0
+	_interacting = 0
+	if interacts_seed >= 0:
+		var rng := RandomNumberGenerator.new()
+		rng.seed = interacts_seed
+		NetworkRollback.remote_state_interacts = func(_node: Node, _tick: int, _previous: Dictionary) -> bool:
+			var interacts := rng.randf() < 0.4
+			_asked += 1
+			if interacts:
+				_interacting += 1
+			return interacts
 	for node in [remote, own]:
 		node.position = Vector3.ZERO
 		node.scale = Vector3.ONE
@@ -202,7 +293,10 @@ func run_session(events: Array, resimulate: bool, loop_per_state: bool) -> Array
 		NetworkRollback._rollback()
 		rollback_ticks += NetworkRollback.loop_to - NetworkRollback.loop_from
 		_loop_starts.append(NetworkRollback.loop_from)
-		result.append([remote_values(range(0, NetworkTime.tick + 1)), auth_ticks(remote, range(0, NetworkTime.tick + 1))])
+		var history := [remote_values(range(0, NetworkTime.tick + 1)), auth_ticks(remote, range(0, NetworkTime.tick + 1))]
+		if own_history:
+			history.append(own_values(range(0, NetworkTime.tick + 1)))
+		result.append(history)
 
 		for state in event[1]:
 			var node: Node = remote if state[0] == "remote" else own
@@ -213,10 +307,15 @@ func run_session(events: Array, resimulate: bool, loop_per_state: bool) -> Array
 			if loop_per_state:
 				NetworkRollback._rollback()
 	NetworkRollback.before_loop.disconnect(notify)
-	_rollback_ticks[resimulate] = rollback_ticks
+	if interacts_seed >= 0:
+		NetworkRollback.remote_state_interacts = Callable()
+	else:
+		_rollback_ticks[resimulate] = rollback_ticks
 	return result
 
 var _loop_first_tick := 0
+var _asked := 0
+var _interacting := 0
 
 # What each tick restores with only full states received: the last one
 # received for the newest tick at or before it
@@ -244,6 +343,14 @@ func reset_session() -> void:
 
 # Helpers ---------------------------------------------------------------------
 
+# Answers remote_state_interacts with [param interacts]; returns the questions
+func record_interacts(interacts: bool) -> Array:
+	var asked := []
+	NetworkRollback.remote_state_interacts = func(node: Node, tick: int, previous: Dictionary) -> bool:
+		asked.append([node, tick, previous])
+		return interacts
+	return asked
+
 func record_remote(ticks: Array, position: Vector3) -> void:
 	for tick in ticks:
 		NetworkHistoryServer._rb_state_history.set_property(tick, remote, ^"position", position)
@@ -261,6 +368,10 @@ func remote_values(ticks: Array) -> Array:
 		result.append(snapshot.get_value(^"position") if snapshot.get_value(^"scale") == Vector3.ONE else snapshot._data.duplicate())
 	return result
 
+# The own node's position restored at each of [param ticks]
+func own_values(ticks: Array) -> Array:
+	return ticks.map(func(tick): return NetworkHistoryServer._rb_state_history.get_latest_snapshot(tick, own).get_value(^"position"))
+
 func auth_ticks(node: Node, ticks: Array) -> Array:
 	return ticks.filter(func(tick): return NetworkHistoryServer._rb_state_history.is_auth(tick, node))
 
@@ -274,13 +385,15 @@ class RemoteNode extends Node3D:
 	func _rollback_tick(_delta: float, _tick: int, _is_fresh: bool) -> void:
 		position.z += 100
 
-# Follows the remote node's restored pose
+# Meets the remote node's restored pose only within reach of x = 0
 class OwnNode extends Node3D:
+	const REACH := 1.0
 	var remote: Node3D
 
 	func _rollback_tick(_delta: float, _tick: int, _is_fresh: bool) -> void:
 		position.x += 1
-		position.y = remote.position.x
+		if absf(remote.position.x) <= REACH:
+			position.y += remote.position.x + 1
 
 class OwnInput extends Node:
 	var speed := 1.0

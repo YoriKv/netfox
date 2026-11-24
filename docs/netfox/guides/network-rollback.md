@@ -226,6 +226,17 @@ nodes are not resimulated against it; they meet it from the next tick they are
 simulated, and the server's states correct any difference. This saves most of a
 client's rollback ticks while other players move in view.
 
+A state of such a node can still change what this peer simulates, e.g. when
+another player's avatar pushes into the local one. Set
+`NetworkRollback.remote_state_interacts` to a `func(node: Node, tick: int,
+previous: Dictionary) -> bool`: with the setting off, it is asked once such a
+state changed the history and is merged, with the values this peer had recorded
+for that tick before, which its own nodes met from then on. A state it answers
+true for starts a resimulation from its tick, as with the setting on. Answer
+from the poses at hand, e.g. whether the node's received or previous position is
+within reach of the local avatar, given how far both can move since `tick`.
+Unset, no such state starts a resimulation.
+
 *Debug resimulate ticks* makes every rollback loop resimulate at least this
 many ticks, even when no new input or state arrived. A side effect that is not
 safe to replay - a sound, a spawn, a counter outside of state - then happens

@@ -236,7 +236,7 @@ func _merge_rollback_state(snapshot: _Snapshot) -> bool:
 	var corrections := _find_corrections(snapshot)
 
 	_merge_snapshot(snapshot, _rb_state_snapshots)
-	var changed_subjects := []
+	var changed_subjects := {}
 	var has_updated := _merge_history(snapshot, _rb_state_history, false, changed_subjects)
 	if not NetworkRollback._resimulate_on_remote_state:
 		has_updated = _carry_remote_states(snapshot.tick, changed_subjects)
@@ -245,11 +245,15 @@ func _merge_rollback_state(snapshot: _Snapshot) -> bool:
 		NetworkRollback.on_correction.emit(correction[0], snapshot.tick, correction[1])
 	return has_updated
 
-# A changed state of a node this peer does not simulate starts no resimulation:
-# its records after [param tick] are rewritten as resimulating would record them
-# instead. Return true if a node this peer simulates changed
-func _carry_remote_states(tick: int, changed_subjects: Array) -> bool:
+# A changed state of a node this peer does not simulate has its records after
+# [param tick] rewritten as resimulating would record them, and starts no
+# resimulation unless [member _NetworkRollback.remote_state_interacts] says it
+# can change what this peer simulates. [param changed_subjects] maps each
+# subject to the values it had at [param tick] before. Return true if the state
+# must be resimulated
+func _carry_remote_states(tick: int, changed_subjects: Dictionary) -> bool:
 	var has_updated := false
+	var interacts := NetworkRollback.remote_state_interacts
 	for subject in changed_subjects:
 		if RollbackSimulationServer._is_simulated_locally(subject):
 			has_updated = true
@@ -264,6 +268,9 @@ func _carry_remote_states(tick: int, changed_subjects: Array) -> bool:
 			for property in record.properties():
 				tick_snapshot.set_property(subject, property, record.get_value(property))
 			tick_snapshot.set_auth(subject, false)
+
+		if not has_updated and not interacts.is_null() and interacts.call(subject, tick, changed_subjects[subject]):
+			has_updated = true
 	return has_updated
 
 # Return [subject, properties] for each subject simulated here whose recorded
@@ -390,8 +397,9 @@ func _merge_snapshot(snapshot: _Snapshot, snapshots: _HistoryBuffer, reverse: bo
 	else:
 		return original_snapshot.merge(snapshot)
 
-# Appends each subject whose values changed to [param changed_subjects]
-func _merge_history(snapshot: _Snapshot, history: _PerObjectHistory, reverse: bool = false, changed_subjects: Array = []) -> bool:
+# Maps each subject whose values changed to its values before in
+# [param changed_subjects]
+func _merge_history(snapshot: _Snapshot, history: _PerObjectHistory, reverse: bool = false, changed_subjects: Dictionary = {}) -> bool:
 	var tick := snapshot.tick
 	var has_updated := false
 
@@ -415,14 +423,14 @@ func _merge_history(snapshot: _Snapshot, history: _PerObjectHistory, reverse: bo
 			var original_value := object_snapshot.get_value(property)
 			var new_value := snapshot.get_property(subject, property)
 
-			object_snapshot.set_value(property, new_value)
 			if not is_changed and original_value != new_value:
 				is_changed = true
+				changed_subjects[subject] = object_snapshot._data.duplicate()
+			object_snapshot.set_value(property, new_value)
 		object_snapshot.set_auth(snapshot.is_auth(subject))
 
 		if is_changed:
 			has_updated = true
-			changed_subjects.append(subject)
 
 	return has_updated
 

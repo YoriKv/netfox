@@ -138,6 +138,20 @@ var loop_to: int:
 	set(v):
 		push_error("Trying to set read-only variable loop_to")
 
+## Decides whether a received state of a node this peer does not simulate
+## starts a resimulation, with [code]netfox/rollback/resimulate_on_remote_state[/code]
+## off.
+## [br][br]
+## Called as [code]func(node: Node, tick: int, previous: Dictionary) -> bool[/code]
+## for each such node whose state at [param tick] changed the recorded history,
+## once the state is merged; [param previous] maps its properties to the values
+## recorded for [param tick] before, which this peer's simulation met from
+## [param tick] on. Return true if the state can change what this peer
+## simulates, e.g. the node, where it was received or where it was recorded
+## before, may have touched one of this peer's nodes since [param tick]. The
+## state then starts a resimulation from its tick. Unset, no such state does.
+var remote_state_interacts: Callable
+
 ## Event emitted before running the network rollback loop.
 signal before_loop()
 
