@@ -86,6 +86,26 @@ func suite() -> void:
 			cleanup(sync_server, [node, other])
 		)
 
+		test("should share what peers sent the same remember", func():
+			var sync_server := await get_peered_server([2, 3])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			# Each peer was sent the same, remembered apart
+			var sent := _Snapshot.of(1, [[node, ^"position", Vector3.ZERO]], [node])
+			sync_server._remember_sent_rollback_state(2, sent)
+			sync_server._remember_sent_rollback_state(3, sent)
+
+			set_rollback_states(2, [[node, Vector3.ONE]], [node])
+			sync_server._synchronize_state(2)
+
+			var remembered := sync_server._get_last_sent_rollback_state(2, 2)
+			expect_equal(remembered.get_property(node, ^"position"), Vector3.ONE)
+			expect(remembered == sync_server._get_last_sent_rollback_state(3, 2), "Peers should share the remembered state!")
+
+			cleanup(sync_server, [node])
+		)
+
 		test("should send peers sent different states their own", func():
 			var sync_server := await get_peered_server([2, 3])
 			var node := await get_node("subject")

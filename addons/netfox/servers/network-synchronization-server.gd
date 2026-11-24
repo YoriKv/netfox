@@ -252,6 +252,15 @@ func _make_subjects_snapshot(snapshot: _Snapshot, subjects: Array, properties: _
 			result.set_auth(subject, true)
 	return result
 
+# Peers whose last sent states hold the same are sent the same, whether they
+# share the record or not
+func _is_same_sent_state(snapshot: _Snapshot, other: _Snapshot) -> bool:
+	if snapshot == other:
+		return true
+	if snapshot == null or other == null:
+		return false
+	return snapshot._data == other._data and snapshot._auth_subjects._data == other._auth_subjects._data
+
 func _has_owned_auth_subject(snapshot: _Snapshot) -> bool:
 	for subject in snapshot.get_auth_subjects():
 		if _rb_owned_state_properties.has_subject(subject):
@@ -336,7 +345,7 @@ func _synchronize_state(tick: int) -> void:
 	# Peers that see the same subjects and were sent the same states before get
 	# the same state, so it is prepared once for each such group
 	var peer_snapshots := {} # visible subjects to peer snapshot
-	var prepared := {} # [peer snapshot, reference, is full] to [sent, remembered, frames]
+	var prepared := {} # [peer snapshot, is full] to [[reference, sent, remembered, frames]]
 	for peer in _get_peers():
 		var visible_subjects := _get_visible_auth_subjects(snapshot, peer, _rb_owned_state_properties)
 		if visible_subjects.is_empty():
@@ -352,31 +361,38 @@ func _synchronize_state(tick: int) -> void:
 		var reference_snapshot := _get_last_sent_rollback_state(peer, tick)
 		var peer_is_full := is_full or reference_snapshot == null
 
-		var key := [peer_snapshot, reference_snapshot, peer_is_full]
-		var state := prepared.get(key, []) as Array
+		var key := [peer_snapshot, peer_is_full]
+		var states := prepared.get(key, []) as Array
+		var state := []
+		for candidate in states:
+			if _is_same_sent_state(candidate[0], reference_snapshot):
+				state = candidate
+				break
+
 		if state.is_empty():
 			var sent := peer_snapshot if peer_is_full else _Snapshot.make_patch(reference_snapshot, peer_snapshot)
 			var remembered: _Snapshot = null
 			if not sent.is_empty():
 				remembered = _merge_sent_rollback_state(reference_snapshot, sent)
-			state = [sent, remembered, {}]
-			prepared[key] = state
+			state = [reference_snapshot, sent, remembered, {}]
+			states.append(state)
+			prepared[key] = states
 
-		var sent := state[0] as _Snapshot
+		var sent := state[1] as _Snapshot
 		if sent.is_empty():
 			# Nothing changed, don't send anything
 			continue
 
 		if peer_is_full:
-			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[2])
+			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[3])
 			for packet in packets:
 				_cmd_full_state.send(packet, peer)
 		else:
-			var packets := _sparse_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[2])
+			var packets := _sparse_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[3])
 			for packet in packets:
 				_cmd_diff_state.send(packet, peer)
 
-		_get_peer_rb_sent_history(peer).set_at(tick, state[1])
+		_get_peer_rb_sent_history(peer).set_at(tick, state[2])
 		NetworkPerformance.push_full_state_props(peer_snapshot.size())
 		NetworkPerformance.push_sent_state_props(sent.size())
 
