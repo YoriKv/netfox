@@ -4,12 +4,14 @@ class_name _SparseSnapshotSerializer
 static func _static_init() -> void:
 	_logger = NetfoxLogger._for_netfox("SparseSnapshotSerializer")
 
-func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter) -> Array[PackedByteArray]:
+# Pass the same [param frames] to write the same snapshot for several peers:
+# each subject's data is encoded once, and only its reference per peer
+func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}) -> Array[PackedByteArray]:
 	var packet_buffer := _PacketBuffer.new(max_packet_size)
 	var frame_buffer := StreamPeerBuffer.new()
 	var node_buffer := StreamPeerBuffer.new()
+	var data_buffer := StreamPeerBuffer.new()
 
-	var netref := NetworkSchemas._netref()
 	var varuint := NetworkSchemas.varuint()
 	var varbits := NetworkSchemas._varbits()
 
@@ -18,7 +20,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		packet.put_u32(snapshot.tick)
 
 	# For each node
-	for subject in properties.get_subjects():
+	for subject in properties.get_subjects_raw():
 		if not filter.call(subject): continue
 		if not snapshot.is_auth(subject): continue
 
@@ -26,29 +28,35 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		assert(node.is_multiplayer_authority(), "Trying to serialize state for non-owned node!")
 		assert(snapshot.is_auth(node), "Trying to serialize non-auth state node!")
 
-		# Prepare buffers
-		frame_buffer.clear()
-		node_buffer.clear()
-
 		# Write frame, starting with identifier
+		frame_buffer.clear()
 		if _write_identifier(node, peer, frame_buffer) != OK:
 			continue
 
-		var node_props := properties.get_properties_of(node)
-		var changed_bits := _Bitset.new(node_props.size())
+		var frame_data := frames.get(node, PackedByteArray()) as PackedByteArray
+		if frame_data.is_empty():
+			node_buffer.clear()
+			data_buffer.clear()
 
-		for i in node_props.size():
-			var property := node_props[i]
-			if not snapshot.has_property(node, property):
-				continue
+			var node_props := properties.get_properties_of_raw(node)
+			var changed_bits := _Bitset.new(node_props.size())
 
-			changed_bits.set_bit(i)
-			var value := snapshot.get_property(node, property)
-			_write_property(node, property, value, node_buffer)
+			for i in node_props.size():
+				var property := node_props[i] as NodePath
+				if not snapshot.has_property(node, property):
+					continue
 
-		varuint.encode(node_buffer.data_array.size(), frame_buffer)		# Node props len
-		varbits.encode(changed_bits, frame_buffer)						# Changed prop bits
-		frame_buffer.put_data(node_buffer.data_array)					# Changed props
+				changed_bits.set_bit(i)
+				var value := snapshot.get_property(node, property)
+				_write_property(node, property, value, node_buffer)
+
+			varuint.encode(node_buffer.data_array.size(), data_buffer)		# Node props len
+			varbits.encode(changed_bits, data_buffer)						# Changed prop bits
+			data_buffer.put_data(node_buffer.data_array)					# Changed props
+			frame_data = data_buffer.data_array
+			frames[node] = frame_data
+
+		frame_buffer.put_data(frame_data)
 
 		# Write frame into output buffer
 		packet_buffer.push(frame_buffer.data_array)

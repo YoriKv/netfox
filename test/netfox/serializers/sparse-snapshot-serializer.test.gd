@@ -120,3 +120,41 @@ func suite() -> void:
 		known_subject.queue_free()
 		unknown_subject.queue_free()
 	)
+
+	test("should write the same with frames reused across peers", func():
+		var schema := _NetworkSchema.new()
+		var serializer := _SparseSnapshotSerializer.new(schema)
+
+		var subject := await get_subject()
+		var other := await get_subject()
+		NetworkIdentityServer.register_node(subject)
+		NetworkIdentityServer.register_node(other)
+
+		# Peer 2 names the subjects by id, peer 1 by name
+		for node in [subject, other]:
+			var identifier := NetworkIdentityServer._get_identifier_of(node)
+			identifier.set_id_for(2, identifier.get_local_id())
+
+		var snapshot := _Snapshot.of(0, [
+			[subject, "position", Vector3.ONE],
+			[subject, "scale", Vector3.ONE],
+			[other, "position", Vector3.UP],
+			[other, "scale", Vector3.ONE]
+		], [subject, other])
+		var props := _PropertyPool.of([
+			[subject, "position"], [subject, "scale"],
+			[other, "position"], [other, "scale"]
+		])
+
+		var frames := {}
+		for peer in [1, 2]:
+			var reused := serializer.write_for(peer, snapshot, props, _BaseSnapshotSerializer._default_filter, frames)
+			var alone := serializer.write_for(peer, snapshot, props)
+			expect_equal(reused, alone)
+			expect_equal(serializer.read_from(1, props, to_buffer(reused[0])), snapshot)
+
+		NetworkIdentityServer.deregister_node(subject)
+		NetworkIdentityServer.deregister_node(other)
+		subject.queue_free()
+		other.queue_free()
+	)

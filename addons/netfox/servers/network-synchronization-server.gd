@@ -336,7 +336,7 @@ func _synchronize_state(tick: int) -> void:
 	# Peers that see the same subjects and were sent the same states before get
 	# the same state, so it is prepared once for each such group
 	var peer_snapshots := {} # visible subjects to peer snapshot
-	var prepared := {} # [peer snapshot, reference, is full] to [sent, remembered]
+	var prepared := {} # [peer snapshot, reference, is full] to [sent, remembered, frames]
 	for peer in _get_peers():
 		var visible_subjects := _get_visible_auth_subjects(snapshot, peer, _rb_owned_state_properties)
 		if visible_subjects.is_empty():
@@ -359,7 +359,7 @@ func _synchronize_state(tick: int) -> void:
 			var remembered: _Snapshot = null
 			if not sent.is_empty():
 				remembered = _merge_sent_rollback_state(reference_snapshot, sent)
-			state = [sent, remembered]
+			state = [sent, remembered, {}]
 			prepared[key] = state
 
 		var sent := state[0] as _Snapshot
@@ -368,11 +368,11 @@ func _synchronize_state(tick: int) -> void:
 			continue
 
 		if peer_is_full:
-			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties)
+			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[2])
 			for packet in packets:
 				_cmd_full_state.send(packet, peer)
 		else:
-			var packets := _sparse_serializer.write_for(peer, sent, _rb_owned_state_properties)
+			var packets := _sparse_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[2])
 			for packet in packets:
 				_cmd_diff_state.send(packet, peer)
 
@@ -399,6 +399,9 @@ func _synchronize_sync_state(tick: int) -> void:
 	if not is_full:
 		diff = _Snapshot.make_patch(_last_sync_state_sent, snapshot)
 
+	# Frames encoded for the state most peers get, reused across them
+	var shared_frames := {}
+
 	for peer in _get_peers():
 		# A diff is relative to the previous tick's state, which a subject the peer
 		# could not see was not sent with - send such subjects in full first
@@ -419,9 +422,10 @@ func _synchronize_sync_state(tick: int) -> void:
 				peer_diff.set_auth(subject, true)
 
 		var filter := func(subject): return sent_subjects.has(subject)
+		var frames := shared_frames if peer_diff == diff else {}
 
 		if is_full:
-			var packets := _dense_serializer.write_for(peer, snapshot, _sync_owned_state_properties, filter)
+			var packets := _dense_serializer.write_for(peer, snapshot, _sync_owned_state_properties, filter, frames)
 			for packet in packets:
 				_cmd_full_sync.send(packet, peer)
 
@@ -429,7 +433,7 @@ func _synchronize_sync_state(tick: int) -> void:
 			NetworkPerformance.push_sent_state_props(snapshot.size())
 		else:
 			# Nothing is sent if no visible subject changed
-			var packets := _sparse_serializer.write_for(peer, peer_diff, _sync_owned_state_properties, filter)
+			var packets := _sparse_serializer.write_for(peer, peer_diff, _sync_owned_state_properties, filter, frames)
 			for packet in packets:
 				_cmd_diff_sync.send(packet, peer)
 
