@@ -56,6 +56,70 @@ func suite() -> void:
 			cleanup(sync_server, [node])
 		)
 
+		test("should send peers seeing the same the same states", func():
+			var sync_server := await get_peered_server([2, 3])
+			var node := await get_node("subject")
+			var other := await get_node("other")
+			register_rollback_state(sync_server, node)
+			register_rollback_state(sync_server, other)
+
+			# Peer 3 names the subjects by id, peer 2 by name
+			for subject in [node, other]:
+				var identifier := servers.identity_server()._get_identifier_of(subject)
+				identifier.set_id_for(3, identifier.get_local_id())
+
+			set_rollback_states(1, [[node, Vector3.ZERO], [other, Vector3.ZERO]], [node, other])
+			set_rollback_states(2, [[node, Vector3.ONE], [other, Vector3.ZERO]], [node, other])
+			set_rollback_states(3, [[node, Vector3.ONE], [other, Vector3.UP]], [node, other])
+			set_rollback_states(4, [[node, Vector3.ONE], [other, Vector3.UP]], [node, other])
+			for tick in [1, 2, 3, 4, 2]:
+				sync_server._synchronize_state(tick)
+
+			var expected := [
+				[1, true, as_values(_Snapshot.of(1, [[node, ^"position", Vector3.ZERO], [other, ^"position", Vector3.ZERO]], [node, other]))],
+				[2, false, as_values(_Snapshot.of(2, [[node, ^"position", Vector3.ONE]], [node]))],
+				[3, false, as_values(_Snapshot.of(3, [[other, ^"position", Vector3.UP]], [other]))]
+			]
+			expect_equal(sent_states(sync_server, 2, [node, other]), expected)
+			expect_equal(sent_states(sync_server, 3, [node, other]), expected)
+
+			cleanup(sync_server, [node, other])
+		)
+
+		test("should send peers sent different states their own", func():
+			var sync_server := await get_peered_server([2, 3])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			# Peer 3 sees the subject from tick 2 on
+			var filter := PeerVisibilityFilter.new()
+			filter.set_visibility_for(3, false)
+			filter.update_visibility(PackedInt32Array([2, 3]))
+			sync_server.register_visibility_filter(node, filter)
+
+			set_rollback_states(1, [[node, Vector3.ZERO]], [node])
+			set_rollback_states(2, [[node, Vector3.ONE]], [node])
+			set_rollback_states(3, [[node, Vector3.UP]], [node])
+			sync_server._synchronize_state(1)
+			filter.set_visibility_for(3, true)
+			filter.update_visibility(PackedInt32Array([2, 3]))
+			sync_server._synchronize_state(2)
+			sync_server._synchronize_state(3)
+
+			expect_equal(sent_states(sync_server, 2, [node]), [
+				[1, true, as_values(_Snapshot.of(1, [[node, ^"position", Vector3.ZERO]], [node]))],
+				[2, false, as_values(_Snapshot.of(2, [[node, ^"position", Vector3.ONE]], [node]))],
+				[3, false, as_values(_Snapshot.of(3, [[node, ^"position", Vector3.UP]], [node]))]
+			])
+			expect_equal(sent_states(sync_server, 3, [node]), [
+				[2, true, as_values(_Snapshot.of(2, [[node, ^"position", Vector3.ONE]], [node]))],
+				[3, false, as_values(_Snapshot.of(3, [[node, ^"position", Vector3.UP]], [node]))]
+			])
+
+			filter.free()
+			cleanup(sync_server, [node])
+		)
+
 		test("should keep full state interval over ticks without auth state", func():
 			var sync_server := await get_peered_server([2])
 			sync_server._rb_full_scheduler = _IntervalScheduler.new(2)
@@ -404,6 +468,41 @@ func set_rollback_state(tick: int, node: Node, position: Vector3, is_auth: bool)
 	if is_auth:
 		auth_subjects.append(node)
 	servers.history_server()._rb_state_snapshots.set_at(tick, _Snapshot.of(tick, [[node, ^"position", position]], auth_subjects))
+
+func set_rollback_states(tick: int, values: Array, auth_subjects: Array[Object]) -> void:
+	var entries: Array[Array] = []
+	for value in values:
+		entries.append([value[0], ^"position", value[1]])
+	servers.history_server()._rb_state_snapshots.set_at(tick, _Snapshot.of(tick, entries, auth_subjects))
+
+# Each rollback state sent to [param peer] as [tick, is full, decoded snapshot]
+func sent_states(sync_server: _NetworkSynchronizationServer, peer: int, nodes: Array) -> Array:
+	var properties := _PropertyPool.new()
+	for node in nodes:
+		properties.add(node, ^"position")
+	var dense := _DenseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+	var sparse := _SparseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+
+	var result := []
+	for command in servers.command_server().commands_sent:
+		if command[2] != peer:
+			continue
+		var is_full: bool = command[0] == sync_server._cmd_full_state._idx
+		if not is_full and command[0] != sync_server._cmd_diff_state._idx:
+			continue
+		var buffer := StreamPeerBuffer.new()
+		buffer.data_array = command[1]
+		var snapshot := dense.read_from(1, properties, buffer) if is_full else sparse.read_from(1, properties, buffer)
+		result.append([snapshot.tick, is_full, as_values(snapshot)])
+	return result
+
+# A snapshot as values that compare equal in an array
+func as_values(snapshot: _Snapshot) -> Array:
+	var auth_ids := []
+	for subject in snapshot.get_auth_subjects():
+		auth_ids.append(subject.get_instance_id())
+	auth_ids.sort()
+	return [snapshot.tick, snapshot._data, auth_ids]
 
 # Each rollback state sent to [param peer] as [tick, is full]
 func sent_state_ticks(sync_server: _NetworkSynchronizationServer, peer: int) -> Array:
