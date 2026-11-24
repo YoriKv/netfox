@@ -14,6 +14,14 @@ enum {
 	CANCELLING
 }
 
+## Decides which peers receive the action's state
+## [br][br]
+## If not set, the state is sent to every peer. Set it to send only to the peers
+## that have this node, e.g. to the [member RollbackSynchronizer.visibility_filter]
+## of the node the action belongs to. The filter is neither updated nor freed by
+## this node.
+var visibility_filter: PeerVisibilityFilter = null
+
 var _active_ticks: _Set = _Set.new()
 var _last_set_tick: int = -1
 
@@ -208,7 +216,11 @@ func _after_loop() -> void:
 			serialize_to = maxi(_active_ticks.max(), serialize_to)
 
 		var active_tick_bytes = _TicksetSerializer.serialize(serialize_from, serialize_to, _active_ticks)
-		_submit_state.rpc(active_tick_bytes)
+		if visibility_filter:
+			for peer in visibility_filter.get_rpc_target_peers():
+				_submit_state.rpc_id(peer, active_tick_bytes)
+		else:
+			_submit_state.rpc(active_tick_bytes)
 
 @rpc("authority", "unreliable_ordered", "call_remote")
 func _submit_state(bytes: PackedByteArray) -> void:
