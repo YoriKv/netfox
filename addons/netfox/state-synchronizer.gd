@@ -156,6 +156,9 @@ func _enter_tree() -> void:
 	if not visibility_filter.get_parent():
 		add_child(visibility_filter)
 
+	# Register once the whole subtree is in the tree - also when entering again
+	_process_settings_in_tree.call_deferred()
+
 func _exit_tree() -> void:
 	if Engine.is_editor_hint():
 		return
@@ -170,16 +173,20 @@ func _ready() -> void:
 	if Engine.is_editor_hint():
 		return
 
-	process_settings.call_deferred()
-
 	# Reprocess authority on connect
 	# Important if nodes are pre-placed in the scene - node starts as owned by
 	# us ( offline peer is 1 ), but once we connect, we no longer own the node
 	if NetworkEvents.enabled:
 		# User might change `multiplayer` - `NetworkEvents` handles that
-		NetworkEvents.on_client_start.connect(func(__): process_settings())
+		NetworkEvents.on_client_start.connect(func(__): _process_settings_in_tree())
 	else:
-		multiplayer.connected_to_server.connect(process_settings)
+		multiplayer.connected_to_server.connect(_process_settings_in_tree)
+
+# Skipped when the node has left the tree since the call was deferred: entering
+# the tree again processes settings
+func _process_settings_in_tree() -> void:
+	if is_inside_tree():
+		process_settings()
 
 func _register_schema(schema: Dictionary) -> void:
 	for prop in schema:

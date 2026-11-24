@@ -147,6 +147,50 @@ func suite():
 		)
 	)
 
+	define("tree", func():
+		test("should not register after leaving tree", func():
+			var setup := make_spawn_synchronizer(0, 0)
+			var root := setup[0] as SpawnAwareRollbackNode
+
+			# Leave before the deferred registration runs
+			Vest.get_tree().root.add_child(root)
+			Vest.get_tree().root.remove_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_null(NetworkIdentityServer._get_identifier_of(root))
+			expect_not(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should not be registered!")
+			expect_not(RollbackSimulationServer._callbacks.has(root), "Simulation should not be registered!")
+			expect_not(RollbackLivenessServer.is_registered(root), "Liveness should not be registered!")
+		)
+
+		test("should register again on entering tree", func():
+			var setup := await create_spawn_synchronizer(0, 0)
+			var root := setup[0] as SpawnAwareRollbackNode
+			var rbs := setup[1] as RollbackSynchronizer
+			var serializer := NetworkSchemas.int32()
+			rbs.set_schema({ ":tracked_value": serializer })
+			await Vest.get_tree().process_frame
+
+			var parent := root.get_parent()
+			parent.remove_child(root)
+			expect_null(NetworkIdentityServer._get_identifier_of(root))
+			expect_equal(rbs.spawn_tick, -1)
+
+			parent.add_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_equal(rbs.spawn_tick, NetworkRollback.tick + 1)
+			expect_not_null(NetworkIdentityServer._get_identifier_of(root))
+			expect(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should be registered!")
+			expect(NetworkSynchronizationServer._rb_state_properties.has_subject(root), "State should be synchronized!")
+			expect(RollbackSimulationServer._callbacks.has(root), "Simulation should be registered!")
+			expect(RollbackLivenessServer.is_registered(root), "Liveness should be registered!")
+			expect_equal(rbs._liveness_nodes, [root] as Array[Node])
+			expect_equal(NetworkSynchronizationServer._visibility_filters.get(root), rbs.visibility_filter)
+			expect_equal(NetworkSynchronizationServer._schemas._get_serializer(root, ^"tracked_value"), serializer)
+		)
+	)
+
 	# Messy to set up, keeping cases for later
 	define("Input age and predicting", func():
 		test("should return -1 on no input", func(): todo())
@@ -175,6 +219,14 @@ class RollbackAware extends Node:
 		return "RollbackAware:" + name
 
 func create_spawn_synchronizer(spawn_tick: int, tracked_value: int) -> Array:
+	make_spawn_synchronizer(spawn_tick, tracked_value)
+
+	Vest.get_tree().root.add_child.call_deferred(spawn_root)
+	await spawn_root.ready
+
+	return [spawn_root, spawn_rbs]
+
+func make_spawn_synchronizer(spawn_tick: int, tracked_value: int) -> Array:
 	spawn_root = SpawnAwareRollbackNode.new()
 	spawn_root.name = "Spawn Root"
 	spawn_root.tracked_value = tracked_value
@@ -186,9 +238,6 @@ func create_spawn_synchronizer(spawn_tick: int, tracked_value: int) -> Array:
 	spawn_rbs.spawn_tick = spawn_tick
 
 	spawn_root.add_child(spawn_rbs)
-
-	Vest.get_tree().root.add_child.call_deferred(spawn_root)
-	await spawn_root.ready
 
 	return [spawn_root, spawn_rbs]
 

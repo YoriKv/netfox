@@ -75,6 +75,26 @@ func suite() -> void:
 		)
 	)
 
+	define("tree", func():
+		test("should register again on entering tree", func():
+			await Vest.get_tree().process_frame
+
+			var parent := root.get_parent()
+			parent.remove_child(root)
+			expect_not(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should not be registered!")
+			expect_equal(synchronizer.spawn_tick, -1)
+
+			parent.add_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_equal(synchronizer.spawn_tick, NetworkRollback.tick + 1)
+			expect(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should be registered!")
+			expect(RollbackSimulationServer._callbacks.has(root), "Simulation should be registered!")
+			expect(RollbackLivenessServer.is_registered(root), "Liveness should be registered!")
+			expect_equal(synchronizer._liveness_nodes, [root] as Array[Node])
+		)
+	)
+
 class SyncNode extends Node:
 	var tracked_value := 0
 

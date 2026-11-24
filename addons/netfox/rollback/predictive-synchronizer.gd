@@ -25,6 +25,9 @@ class_name PredictiveSynchronizer
 
 ## The rollback tick when this synchronizer's managed nodes became alive.
 ## Used to seed initial state history, register liveness, and request resim.
+## [br][br]
+## If not set, defaults to the next tick on entering the tree. Reset on leaving
+## the tree, as the managed nodes are deregistered.
 var spawn_tick = -1
 
 var _state_properties := _PropertyPool.new()
@@ -107,16 +110,14 @@ func _ready() -> void:
 	if Engine.is_editor_hint():
 		return
 
-	process_settings.call_deferred()
-
 	# Reprocess authority on connect
 	# Important if nodes are pre-placed in the scene - node starts as owned by
 	# us ( offline peer is 1 ), but once we connect, we no longer own the node
 	if NetworkEvents.enabled:
 		# User might change `multiplayer` - `NetworkEvents` handles that
-		NetworkEvents.on_client_start.connect(func(__): process_settings())
+		NetworkEvents.on_client_start.connect(func(__): _process_settings_in_tree())
 	else:
-		multiplayer.connected_to_server.connect(process_settings)
+		multiplayer.connected_to_server.connect(_process_settings_in_tree)
 
 func _enter_tree() -> void:
 	if Engine.is_editor_hint():
@@ -128,8 +129,10 @@ func _enter_tree() -> void:
 		spawn_tick = NetworkRollback.tick + 1
 
 	# Resimulate from spawn tick *only on the next loop*
-	NetworkRollback.before_loop.connect(func():
-		NetworkRollback.notify_resimulation_start(spawn_tick), CONNECT_ONE_SHOT)
+	NetworkRollback.before_loop.connect(_notify_spawn_resimulation, CONNECT_ONE_SHOT)
+
+	# Register once the whole subtree is in the tree - also when entering again
+	_process_settings_in_tree.call_deferred()
 
 func _exit_tree() -> void:
 	if Engine.is_editor_hint():
@@ -137,13 +140,30 @@ func _exit_tree() -> void:
 
 	_managed_roots.erase(root)
 
+	if NetworkRollback.before_loop.is_connected(_notify_spawn_resimulation):
+		NetworkRollback.before_loop.disconnect(_notify_spawn_resimulation)
+
 	# Consider PredictiveSynchronizer and its nodes as freed, time to deregister everything
 	for node in _sim_nodes:
 		RollbackSimulationServer.deregister_node(node)
+	_sim_nodes.clear()
 	for node in _liveness_nodes:
 		RollbackLivenessServer.deregister(node)
+	_liveness_nodes.clear()
 	for subject in _state_properties.get_subjects():
 		NetworkHistoryServer.deregister(subject)
+
+	# Entering the tree again registers the nodes as spawned then
+	spawn_tick = -1
+
+# Skipped when the node has left the tree since the call was deferred: entering
+# the tree again processes settings
+func _process_settings_in_tree() -> void:
+	if is_inside_tree():
+		process_settings()
+
+func _notify_spawn_resimulation() -> void:
+	NetworkRollback.notify_resimulation_start(spawn_tick)
 
 func _reprocess_settings() -> void:
 	if not _properties_dirty or Engine.is_editor_hint():

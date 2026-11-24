@@ -36,7 +36,48 @@ func suite():
 		)
 	)
 
+	define("tree", func():
+		test("should not register after leaving tree", func():
+			make_synchronizer()
+
+			# Leave before the deferred registration runs
+			Vest.get_tree().root.add_child(root)
+			Vest.get_tree().root.remove_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_null(NetworkIdentityServer._get_identifier_of(root))
+			expect_not(NetworkHistoryServer._sync_state_properties.has_subject(root), "State should not be registered!")
+			expect_not(NetworkSynchronizationServer._sync_state_properties.has_subject(root), "State should not be synchronized!")
+		)
+
+		test("should register again on entering tree", func():
+			await create_synchronizer()
+			var serializer := NetworkSchemas.int32()
+			synchronizer.set_schema({ ":value": serializer })
+			await Vest.get_tree().process_frame
+
+			var parent := root.get_parent()
+			parent.remove_child(root)
+			expect_null(NetworkIdentityServer._get_identifier_of(root))
+
+			parent.add_child(root)
+			await Vest.get_tree().process_frame
+
+			expect_not_null(NetworkIdentityServer._get_identifier_of(root))
+			expect(NetworkHistoryServer._sync_state_properties.has_subject(root), "State should be registered!")
+			expect(NetworkSynchronizationServer._sync_state_properties.has_subject(root), "State should be synchronized!")
+			expect_equal(NetworkSynchronizationServer._visibility_filters.get(root), synchronizer.visibility_filter)
+			expect_equal(NetworkSynchronizationServer._schemas._get_serializer(root, ^"value"), serializer)
+		)
+	)
+
 func create_synchronizer() -> void:
+	make_synchronizer()
+
+	Vest.get_tree().root.add_child.call_deferred(root)
+	await root.ready
+
+func make_synchronizer() -> void:
 	root = StatefulNode.new()
 	root.name = "Stateful Node"
 
@@ -45,9 +86,6 @@ func create_synchronizer() -> void:
 	synchronizer.root = root
 	synchronizer.properties = [":value"]
 	root.add_child(synchronizer)
-
-	Vest.get_tree().root.add_child.call_deferred(root)
-	await root.ready
 
 class StatefulNode extends Node:
 	var value := 0
