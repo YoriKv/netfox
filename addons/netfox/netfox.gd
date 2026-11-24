@@ -165,6 +165,13 @@ var SETTINGS: Array[Dictionary] = [
 		"hint_string": "0,60,or_greater"
 	},
 	{
+		# Whether a received state of a node this peer does not simulate
+		# starts a resimulation; off, it only replaces the records after it
+		"name": "netfox/rollback/resimulate_on_remote_state",
+		"value": true,
+		"type": TYPE_BOOL
+	},
+	{
 		# Debug: resimulate at least this many ticks in every rollback loop
 		"name": "netfox/rollback/debug_resimulate_ticks",
 		"value": 0,

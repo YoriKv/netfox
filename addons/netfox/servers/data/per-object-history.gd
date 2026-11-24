@@ -66,6 +66,32 @@ func restore_latest(tick: int) -> bool:
 			any_applied = true
 	return any_applied
 
+# Rewrite the non-authoritative snapshots of [param subject] after [param tick],
+# up to its next authoritative one, as a rollback loop that does not simulate
+# [param subject] records them: each a copy of the snapshot restored before it.
+# Ticks after which the subject is dead are skipped, as recording does.
+# Returns the ticks rewritten
+func carry_forward(tick: int, subject: Object) -> Array[int]:
+	var result: Array[int] = []
+	if not _data.has(subject):
+		return result
+
+	var history := _data[subject] as _HistoryBuffer
+	for carried_tick in range(tick + 1, history.get_latest_index() + 1):
+		var snapshot := history.get_at(carried_tick) as _ObjectSnapshot
+		if snapshot and snapshot.is_auth():
+			break
+		if not RollbackLivenessServer.is_alive(subject, carried_tick - 1):
+			continue
+
+		var previous := history.get_latest_at(carried_tick - 1) as _ObjectSnapshot
+		if snapshot == null:
+			snapshot = _ObjectSnapshot.new(subject)
+			history.set_at(carried_tick, snapshot)
+		snapshot.copy_values(previous)
+		result.append(carried_tick)
+	return result
+
 # Remove the snapshots of [param subject] from [param tick] on
 func trim_subject(subject: Object, tick: int) -> void:
 	if _data.has(subject):

@@ -40,6 +40,10 @@ func record_properties(properties: Array, tick_snapshot: _Snapshot, is_auth: boo
 	_is_auth = is_auth
 	tick_snapshot.set_auth(object, is_auth)
 
+# Take the values of [param other], keeping the values of properties it lacks
+func copy_values(other: _ObjectSnapshot) -> void:
+	_data.merge(other._data, true)
+
 func apply() -> void:
 	var object := _object
 	var data := _data

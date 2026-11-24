@@ -214,6 +214,18 @@ A refused input emits `NetworkSynchronizationServer.on_input_refused(peer,
 tick)` and is counted per peer by [NetworkPerformance]. Late copies of input
 already received, e.g. from input redundancy, are dropped without a refusal.
 
+*Resimulate on remote state* decides what a received state resimulates from.
+On, the default, any state that changes the recorded history starts a
+resimulation from its tick. Off, only a changed state of a node this peer
+simulates does - it owns one of the node's inputs, the node has no input, or
+prediction is enabled for it. A state of any other node, e.g. another player's
+avatar on a client, is merged into the history and copied to the ticks recorded
+after it, up to the next state received, as a resimulation would record them:
+every tick restores the newest state received at or before it. This peer's own
+nodes are not resimulated against it; they meet it from the next tick they are
+simulated, and the server's states correct any difference. This saves most of a
+client's rollback ticks while other players move in view.
+
 *Debug resimulate ticks* makes every rollback loop resimulate at least this
 many ticks, even when no new input or state arrived. A side effect that is not
 safe to replay - a sound, a spawn, a counter outside of state - then happens

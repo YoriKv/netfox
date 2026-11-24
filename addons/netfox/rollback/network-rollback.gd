@@ -187,6 +187,7 @@ var _display_offset: int = ProjectSettings.get_setting(&"netfox/rollback/display
 var _input_delay: int = ProjectSettings.get_setting(&"netfox/rollback/input_delay", 0)
 var _input_redundancy: int = ProjectSettings.get_setting(&"netfox/rollback/input_redundancy", 3)
 var _debug_resimulate_ticks: int = ProjectSettings.get_setting(&"netfox/rollback/debug_resimulate_ticks", 0)
+var _resimulate_on_remote_state: bool = ProjectSettings.get_setting(&"netfox/rollback/resimulate_on_remote_state", true)
 
 # Timing
 var _tick: int = 0
