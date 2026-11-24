@@ -509,6 +509,9 @@ func _rollback() -> void:
 		NetworkSynchronizationServer._synchronize_state(tick + 1)
 		NetworkHistoryServer.flush_ignores()
 
+	# With netfox/rollback/send_newest_state_only, state is sent once per loop
+	NetworkSynchronizationServer._synchronize_newest_state(to)
+
 	# Restore display state
 	_rollback_stage = _STAGE_AFTER
 	after_loop.emit()

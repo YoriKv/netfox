@@ -76,6 +76,7 @@ func suite() -> void:
 			command.send(PackedByteArray([4]), 3)
 
 			expect_equal(command.get_sent_bytes(), 4)
+			expect_equal(command.get_sent_packets(), 2)
 			command_server.free()
 		)
 	)

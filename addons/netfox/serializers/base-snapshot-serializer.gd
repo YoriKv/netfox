@@ -36,14 +36,15 @@ func _write_identifier(subject: Object, peer: int, buffer: StreamPeerBuffer) -> 
 
 # The frame encoded for [param node] from [param values] earlier, or empty
 # [param frames] maps each node to [values, frame] pairs, so a frame is reused
-# for any snapshot that holds the same values of the node
-static func _find_frame(frames: Dictionary, node: Object, values: Dictionary) -> PackedByteArray:
+# for any snapshot that holds the same values of the node. The values may be
+# anything that compares equal for the same frame
+static func _find_frame(frames: Dictionary, node: Object, values: Variant) -> PackedByteArray:
 	for entry in frames.get(node, []):
 		if entry[0] == values:
 			return entry[1]
 	return PackedByteArray()
 
-static func _keep_frame(frames: Dictionary, node: Object, values: Dictionary, frame: PackedByteArray) -> void:
+static func _keep_frame(frames: Dictionary, node: Object, values: Variant, frame: PackedByteArray) -> void:
 	if not frames.has(node):
 		frames[node] = []
 	frames[node].append([values, frame])

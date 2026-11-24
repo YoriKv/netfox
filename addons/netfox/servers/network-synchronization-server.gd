@@ -15,6 +15,11 @@ class_name _NetworkSynchronizationServer
 ## [br][br]
 ## Optionally, diff states can be used, sending only the property values that
 ## have changed, saving on bandwidth.
+## [br][br]
+## With [code]netfox/rollback/send_newest_state_only[/code], rollback state is
+## instead sent once per rollback loop: each peer gets, for each node it sees,
+## the node's newest authoritative state if it differs from the one it was last
+## sent, in one packet with a tick per node.
 
 # Dependencies
 var _command_server: _NetworkCommandServer
@@ -52,6 +57,11 @@ var _input_max_early := ProjectSettings.get_setting("netfox/rollback/input_max_e
 var _rb_sent_state_history := {} # peer to _HistoryBuffer of _Snapshot
 var _rb_latest_received_state := {} # Node to tick
 
+var _rb_send_newest_only := ProjectSettings.get_setting("netfox/rollback/send_newest_state_only", false) as bool
+var _rb_send_intermediate := ProjectSettings.get_setting("netfox/rollback/send_intermediate_states_to_others", false) as bool
+var _rb_newest_sent := {} # peer to (subject to _SentState)
+var _rb_newest_loop_to := -1 # The last tick the previous loop recorded
+
 var _last_sync_state_sent := _Snapshot.new(0)
 var _sync_sent_subjects := {} # peer to _Set of subjects sent since visible
 var _sync_enable_diffs := ProjectSettings.get_setting("netfox/state_synchronizer/enable_diff_states", true) as bool
@@ -67,10 +77,12 @@ var _schemas := _NetworkSchema.new()
 var _dense_serializer: _DenseSnapshotSerializer
 var _sparse_serializer: _SparseSnapshotSerializer
 var _redundant_serializer: _RedundantSnapshotSerializer
+var _ticked_serializer: _TickedSnapshotSerializer
 
 var _cmd_full_state: NetworkCommandServer.Command
 var _cmd_diff_state: NetworkCommandServer.Command
 var _cmd_input: NetworkCommandServer.Command
+var _cmd_newest_state: NetworkCommandServer.Command
 
 var _cmd_full_sync: NetworkCommandServer.Command
 var _cmd_diff_sync: NetworkCommandServer.Command
@@ -197,6 +209,8 @@ func deregister(node: Node) -> void:
 	set_input_starvation_for(node, 0)
 	for sent_subjects in _sync_sent_subjects.values():
 		(sent_subjects as _Set).erase(node)
+	for sent_states in _rb_newest_sent.values():
+		(sent_states as Dictionary).erase(node)
 
 	# NOTE: _rb_sent_state_history may contain snapshots with invalid subjects
 	# NOTE: Iterating all sent snapshots for `node` may be slow and useless
@@ -206,6 +220,7 @@ func deregister(node: Node) -> void:
 ## Called by default when a peer leaves
 func erase_peer(peer: int) -> void:
 	_rb_sent_state_history.erase(peer)
+	_rb_newest_sent.erase(peer)
 	_sync_sent_subjects.erase(peer)
 
 ## Forget what was sent to other peers, while keeping the registered properties
@@ -216,6 +231,8 @@ func erase_peer(peer: int) -> void:
 func reset() -> void:
 	_rb_sent_state_history.clear()
 	_rb_latest_received_state.clear()
+	_rb_newest_sent.clear()
+	_rb_newest_loop_to = -1
 	for data in [_newest_input, _gap_checked, _fills, _starved_from, _starve_filled]:
 		(data as Dictionary).clear()
 	_last_sync_state_sent = _Snapshot.new(0)
@@ -402,8 +419,8 @@ func _synchronize_input(tick: int) -> void:
 		_cmd_input.send(data, peer)
 
 func _synchronize_state(tick: int) -> void:
-	# We don't own state, nothing to synchronize
-	if _rb_owned_state_properties.is_empty():
+	# We don't own state, nothing to synchronize; or it's sent after the loop
+	if _rb_owned_state_properties.is_empty() or _rb_send_newest_only:
 		return
 
 	# Grab snapshot from NetworkHistoryServer
@@ -485,6 +502,137 @@ func _synchronize_state(tick: int) -> void:
 		_get_peer_rb_sent_history(peer).set_at(tick, state[2])
 		NetworkPerformance.push_full_state_props(peer_snapshot.size())
 		NetworkPerformance.push_sent_state_props(sent.size())
+
+# Send each peer, for each subject it sees, the subject's newest authoritative
+# state if it differs from the one it was last sent of it - in full for a
+# subject it was sent nothing of since it could see it, or on a full state
+# Called once after the rollback loop that recorded up to [param to]
+func _synchronize_newest_state(to: int) -> void:
+	if not _rb_send_newest_only or _rb_owned_state_properties.is_empty():
+		return
+
+	# The full state interval counts ticks, as when sending every tick
+	var is_full := not _rb_enable_diffs
+	var new_ticks := to - _rb_newest_loop_to if _rb_newest_loop_to >= 0 else 1
+	for i in clampi(new_ticks, 1, maxi(_rb_full_scheduler.interval, 1)):
+		if _rb_full_scheduler.is_now():
+			is_full = true
+	_rb_newest_loop_to = to
+
+	var history := _history_server._rb_state_history
+	var history_start := NetworkRollback.history_start
+	var newest := {} # subject to its newest auth tick
+	for subject in _rb_owned_state_properties.get_subjects_raw():
+		var tick := history.get_latest_auth_tick(to, subject, history_start)
+		if tick >= 0:
+			newest[subject] = tick
+	if newest.is_empty():
+		return
+
+	# Peers sent the same of a subject share what they were sent, so its state
+	# is compared and encoded once for all of them
+	var values_of := {} # [subject, is input owner] to the values a peer may get
+	var prepared := {} # [subject, is input owner, sent before] to [values to send, sent after]
+	var frames := {}
+	for peer in _get_peers():
+		var sent_states := _get_peer_newest_sent(peer)
+		var entries := []
+		var full_props := 0
+		var sent_props := 0
+		for subject in _rb_owned_state_properties.get_subjects_raw():
+			if not _is_node_visible_to(peer, subject):
+				sent_states.erase(subject)
+				continue
+			if not newest.has(subject):
+				continue
+
+			var tick := newest[subject] as int
+			var is_owner := false
+			var is_chained := false
+			var reference := sent_states.get(subject) as _SentState
+			if _rb_send_intermediate or _rb_owner_only_state_properties.has_subject(subject):
+				var owns_input := _is_input_owner(subject, peer)
+				is_owner = owns_input and _rb_owner_only_state_properties.has_subject(subject)
+				is_chained = _rb_send_intermediate and not owns_input and not is_full and reference != null and reference.tick < tick
+			var values_key := [subject, is_owner]
+			var key := [subject, is_owner, reference, is_chained, is_full]
+			var result := prepared.get(key, []) as Array
+			if result.is_empty():
+				if not values_of.has(values_key):
+					values_of[values_key] = _get_newest_values(subject, tick, is_owner)
+				result = _prepare_newest(subject, tick, values_of[values_key], is_owner, reference, is_chained, is_full)
+				prepared[key] = result
+
+			var sends := result[0] as Array
+			if sends.is_empty():
+				continue
+			for send in sends:
+				entries.append([subject, send[0], send[1]])
+				sent_props += (send[1] as Dictionary).size()
+			sent_states[subject] = result[1]
+			full_props += (values_of[values_key] as Dictionary).size()
+
+		if entries.is_empty():
+			continue
+		for packet in _ticked_serializer.write_for(peer, to, entries, _rb_owned_state_properties, frames):
+			_cmd_newest_state.send(packet, peer)
+		NetworkPerformance.push_full_state_props(full_props)
+		NetworkPerformance.push_sent_state_props(sent_props)
+
+# Return [[tick, values to send], ...] and what the peer was sent after them:
+# the newest state, as a diff against [param reference], and with
+# [param is_chained] first each authoritative state between the two. With
+# [param is_full], the newest state in full, unless it is the one sent before:
+# a node waiting for input, as its owner fell silent, is sent nothing
+func _prepare_newest(subject: Object, tick: int, values: Dictionary, is_owner: bool, reference: _SentState, is_chained: bool, is_full: bool) -> Array:
+	var sends := []
+	var last := reference
+	if is_chained:
+		var history := _history_server._rb_state_history
+		var between := []
+		var at := history.get_latest_auth_tick(tick - 1, subject, reference.tick + 1)
+		while at >= 0:
+			between.push_front(at)
+			at = history.get_latest_auth_tick(at - 1, subject, reference.tick + 1)
+		for between_tick in between:
+			var between_values := _get_newest_values(subject, between_tick, is_owner)
+			var diff := _diff_values(last.values, between_values)
+			if not diff.is_empty():
+				sends.append([between_tick, diff])
+				last = _SentState.new(between_tick, between_values)
+
+	var diff := values if last == null else _diff_values(last.values, values)
+	if is_full and (last == null or tick > last.tick or not diff.is_empty()):
+		diff = values
+	if not diff.is_empty():
+		sends.append([tick, diff])
+		last = _SentState.new(tick, values)
+	return [sends, last]
+
+# The values of [param subject]'s state recorded at [param tick] that a peer
+# gets: owner-only properties only if [param is_owner]
+func _get_newest_values(subject: Object, tick: int, is_owner: bool) -> Dictionary:
+	var record := _history_server._rb_state_history.get_snapshot(tick, subject)
+	var result := {}
+	for property in _rb_owned_state_properties.get_properties_of_raw(subject):
+		if not is_owner and _rb_owner_only_state_properties.has(subject, property):
+			continue
+		assert(record.has_value(property), "Trying to send missing property %s on subject %s!" % [property, subject])
+		result[property] = record.get_value(property)
+	return result
+
+# The values of [param values] that [param reference] lacks or holds otherwise
+func _diff_values(reference: Dictionary, values: Dictionary) -> Dictionary:
+	var result := {}
+	for property in values:
+		if not reference.has(property) or reference[property] != values[property]:
+			result[property] = values[property]
+	return result
+
+func _get_peer_newest_sent(peer: int) -> Dictionary:
+	if not _rb_newest_sent.has(peer):
+		_rb_newest_sent[peer] = {}
+	return _rb_newest_sent[peer]
 
 func _synchronize_sync_state(tick: int) -> void:
 	# We don't own sync state, nothing to synchronize
@@ -583,10 +731,12 @@ func _ready() -> void:
 	_dense_serializer = _DenseSnapshotSerializer.new(_schemas, _identity_server)
 	_sparse_serializer = _SparseSnapshotSerializer.new(_schemas, _identity_server)
 	_redundant_serializer = _RedundantSnapshotSerializer.new(_schemas, _identity_server)
+	_ticked_serializer = _TickedSnapshotSerializer.new(_schemas, _identity_server)
 
 	_dense_serializer.max_packet_size = _max_packet_size
 	_sparse_serializer.max_packet_size = _max_packet_size
 	_redundant_serializer.max_packet_size = _max_packet_size
+	_ticked_serializer.max_packet_size = _max_packet_size
 
 	# Setup commands
 	_cmd_full_state = _command_server.register_command(_handle_full_state, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
@@ -595,6 +745,10 @@ func _ready() -> void:
 
 	_cmd_full_sync = _command_server.register_command(_handle_full_sync, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE_ORDERED)
 	_cmd_diff_sync = _command_server.register_command(_handle_diff_sync, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE_ORDERED)
+
+	# Only with the setting, so the other commands keep their ids without it
+	if _rb_send_newest_only:
+		_cmd_newest_state = _command_server.register_command(_handle_newest_state, MultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
 
 	# Cleanup
 	if NetworkEvents.enabled:
@@ -628,6 +782,13 @@ func _handle_diff_state(sender: int, data: PackedByteArray) -> void:
 	_logger.trace("Received diff state for @%d", [diff.tick])
 
 	_ingest_state(sender, diff)
+
+func _handle_newest_state(sender: int, data: PackedByteArray) -> void:
+	var buffer := StreamPeerBuffer.new()
+	buffer.data_array = data
+
+	for snapshot in _ticked_serializer.read_from(sender, _rb_state_properties, buffer, NetworkRollback.history_limit):
+		_ingest_state(sender, snapshot)
 
 func _handle_full_sync(sender: int, data: PackedByteArray) -> void:
 	var buffer := StreamPeerBuffer.new()
@@ -860,3 +1021,14 @@ func _ingest_state(sender: int, snapshot: _Snapshot) -> void:
 	if NetworkHistoryServer._merge_rollback_state(snapshot):
 		_on_state.emit(snapshot)
 	_logger.trace("Ingested state: %s", [snapshot])
+
+# What a peer was last sent of a subject's state: the tick and all the values
+# it holds after it, which the next diff is relative to. Never modified, so
+# peers sent the same share one
+class _SentState extends RefCounted:
+	var tick: int
+	var values: Dictionary
+
+	func _init(p_tick: int, p_values: Dictionary) -> void:
+		tick = p_tick
+		values = p_values

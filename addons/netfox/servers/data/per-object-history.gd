@@ -113,6 +113,26 @@ func get_latest_snapshot(tick: int, subject: Object) -> _ObjectSnapshot:
 
 	return history.get_latest_at(tick) as _ObjectSnapshot
 
+# Return the newest tick at or before [param tick], and not before
+# [param floor], with an authoritative snapshot of [param subject], or -1
+func get_latest_auth_tick(tick: int, subject: Object, floor: int) -> int:
+	if not _data.has(subject):
+		return -1
+
+	var history := _data[subject] as _HistoryBuffer
+	var at := tick
+	while at >= floor:
+		var index := history.get_latest_index_at(at)
+		if index < floor:
+			return -1
+		var snapshot := history.get_at(index) as _ObjectSnapshot
+		if snapshot == null:
+			return -1
+		if snapshot.is_auth():
+			return index
+		at = index - 1
+	return -1
+
 func get_latest_tick(tick: int, subject: Object) -> int:
 	if not _data.has(subject):
 		return -1

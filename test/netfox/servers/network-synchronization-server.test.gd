@@ -185,6 +185,322 @@ func suite() -> void:
 		)
 	)
 
+	define("newest state only", func():
+		test("should send each subject's newest authoritative state once per loop", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			for tick in range(1, 6):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+			newest_loop(sync_server, 5)
+			# A burst: three ticks authoritative in one loop, then two recorded without input
+			for tick in range(6, 9):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+			for tick in range(9, 11):
+				record_state(tick, node, { ^"position": Vector3(8, 0, 0) }, false)
+			newest_loop(sync_server, 10)
+
+			expect_equal(sent_newest(sync_server, 2, [node]), [
+				[[5, 0, { ^"position": Vector3(5, 0, 0) }]],
+				[[8, 0, { ^"position": Vector3(8, 0, 0) }]]
+			])
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send nothing from the per-tick synchronization", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			set_rollback_state(1, node, Vector3.ONE, true)
+			sync_server._synchronize_state(1)
+
+			expect_empty(sent_state_ticks(sync_server, 2))
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send subjects of different newest ticks in one packet", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			var other := await get_node("other")
+			register_rollback_state(sync_server, node)
+			register_rollback_state(sync_server, other)
+
+			for tick in range(1, 8):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+				record_state(tick, other, { ^"position": Vector3(0, tick, 0) }, tick <= 5)
+			newest_loop(sync_server, 7)
+
+			expect_equal(sent_newest(sync_server, 2, [node, other]), [[
+				[5, 1, { ^"position": Vector3(0, 5, 0) }],
+				[7, 0, { ^"position": Vector3(7, 0, 0) }]
+			]])
+
+			cleanup(sync_server, [node, other])
+		)
+
+		test("should send what changed since the state last sent", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+			sync_server.register_rollback_state(node, ^"scale")
+
+			record_state(1, node, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE })
+			newest_loop(sync_server, 1)
+			# Changed and changed back between the two newest: not part of the diff
+			record_state(2, node, { ^"position": Vector3.UP, ^"scale": Vector3.ONE * 2 })
+			record_state(3, node, { ^"position": Vector3.UP, ^"scale": Vector3.ONE })
+			newest_loop(sync_server, 3)
+			# Unchanged since sent, if newer
+			record_state(4, node, { ^"position": Vector3.UP, ^"scale": Vector3.ONE })
+			newest_loop(sync_server, 4)
+
+			expect_equal(sent_newest(sync_server, 2, [node], [^"position", ^"scale"]), [
+				[[1, 0, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE }]],
+				[[3, 0, { ^"position": Vector3.UP }]]
+			])
+			expect_equal(sync_server._rb_newest_sent[2][node].tick, 3, "The diff reference stays the state sent")
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send the newest state again when a late input changed it", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			for tick in range(1, 6):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+			newest_loop(sync_server, 5)
+			# A late input of another node changes an older tick only, then the newest
+			record_state(3, node, { ^"position": Vector3.UP })
+			newest_loop(sync_server, 6)
+			record_state(5, node, { ^"position": Vector3.UP })
+			newest_loop(sync_server, 7)
+
+			expect_equal(sent_newest(sync_server, 2, [node]), [
+				[[5, 0, { ^"position": Vector3(5, 0, 0) }]],
+				[[5, 0, { ^"position": Vector3.UP }]]
+			])
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send an older newest state once states lost authority", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			for tick in range(1, 9):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+			newest_loop(sync_server, 8)
+			# Starvation fills from 6 on withdrawn, tick 6 simulated again with real input
+			for tick in range(6, 10):
+				record_state(tick, node, { ^"position": Vector3.UP }, tick == 6)
+			newest_loop(sync_server, 9)
+
+			expect_equal(sent_newest(sync_server, 2, [node]), [
+				[[8, 0, { ^"position": Vector3(8, 0, 0) }]],
+				[[6, 0, { ^"position": Vector3.UP }]]
+			])
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send a subject in full once visible, and on full states", func():
+			var sync_server := await get_newest_server([2])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(4)
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+			sync_server.register_rollback_state(node, ^"scale")
+			var filter := PeerVisibilityFilter.new()
+			filter.default_visibility = false
+			filter.update_visibility(PackedInt32Array([2]))
+			sync_server.register_visibility_filter(node, filter)
+
+			for tick in range(1, 12):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0), ^"scale": Vector3.ONE })
+			newest_loop(sync_server, 1)
+			filter.default_visibility = true
+			filter.update_visibility(PackedInt32Array([2]))
+			newest_loop(sync_server, 2)
+			newest_loop(sync_server, 3)
+			# Hidden, then visible again
+			filter.default_visibility = false
+			filter.update_visibility(PackedInt32Array([2]))
+			newest_loop(sync_server, 4)
+			filter.default_visibility = true
+			filter.update_visibility(PackedInt32Array([2]))
+			newest_loop(sync_server, 6)
+			# The 4th tick counted since is a full state's, in a loop of two new ticks
+			newest_loop(sync_server, 7)
+			newest_loop(sync_server, 9)
+
+			expect_equal(sent_newest(sync_server, 2, [node], [^"position", ^"scale"]), [
+				[[2, 0, { ^"position": Vector3(2, 0, 0), ^"scale": Vector3.ONE }]],
+				[[3, 0, { ^"position": Vector3(3, 0, 0) }]],
+				[[6, 0, { ^"position": Vector3(6, 0, 0), ^"scale": Vector3.ONE }]],
+				[[7, 0, { ^"position": Vector3(7, 0, 0) }]],
+				[[9, 0, { ^"position": Vector3(9, 0, 0), ^"scale": Vector3.ONE }]]
+			])
+
+			filter.free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should send no full state of a subject without a newer state", func():
+			var sync_server := await get_newest_server([2])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(2)
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			# Its owner fell silent after tick 2
+			for tick in range(1, 7):
+				record_state(tick, node, { ^"position": Vector3.ONE }, tick <= 2)
+			for to in range(1, 7):
+				newest_loop(sync_server, to)
+
+			expect_equal(sent_newest(sync_server, 2, [node]), [
+				[[1, 0, { ^"position": Vector3.ONE }]],
+				[[2, 0, { ^"position": Vector3.ONE }]]
+			], "The full state at 2, none at 4 and 6")
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should send owner-only properties to the input owner only", func():
+			var sync_server := await get_newest_server([2, 3])
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			input.set_multiplayer_authority(2)
+			servers.simulation_server().register_rollback_input_for(node, input)
+			register_owner_state(sync_server, node)
+
+			record_state(1, node, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE })
+			newest_loop(sync_server, 1)
+			record_state(2, node, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE * 2 })
+			newest_loop(sync_server, 2)
+			input.set_multiplayer_authority(3)
+			record_state(3, node, { ^"position": Vector3.UP, ^"scale": Vector3.ONE * 2 })
+			newest_loop(sync_server, 3)
+
+			var properties: Array[NodePath] = [^"position", ^"scale"]
+			expect_equal(sent_newest(sync_server, 2, [node], properties), [
+				[[1, 0, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE }]],
+				[[2, 0, { ^"scale": Vector3.ONE * 2 }]],
+				[[3, 0, { ^"position": Vector3.UP }]]
+			])
+			expect_equal(sent_newest(sync_server, 3, [node], properties), [
+				[[1, 0, { ^"position": Vector3.ZERO }]],
+				[[3, 0, { ^"position": Vector3.UP, ^"scale": Vector3.ONE * 2 }]]
+			], "Nothing while only owner-only properties change; all of them once it owns the input")
+
+			servers.simulation_server().deregister_node(node)
+			input.queue_free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should share what peers sent the same were sent", func():
+			var sync_server := await get_newest_server([2, 3, 4])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+			var filter := PeerVisibilityFilter.new()
+			filter.set_visibility_for(4, false)
+			filter.update_visibility(PackedInt32Array([2, 3, 4]))
+			sync_server.register_visibility_filter(node, filter)
+
+			record_state(1, node, { ^"position": Vector3.ZERO })
+			newest_loop(sync_server, 1)
+			filter.set_visibility_for(4, true)
+			filter.update_visibility(PackedInt32Array([2, 3, 4]))
+			record_state(2, node, { ^"position": Vector3.ONE })
+			newest_loop(sync_server, 2)
+
+			var sent := sync_server._rb_newest_sent as Dictionary
+			expect(sent[2][node] == sent[3][node], "Peers sent the same share the record")
+			expect(sent[4][node] != sent[2][node], "A peer sent a full state has its own")
+			expect_equal(sent_newest(sync_server, 4, [node]), [[[2, 0, { ^"position": Vector3.ONE }]]])
+
+			filter.free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should send the others each state since the one last sent, with the setting", func():
+			var sync_server := await get_newest_server([2, 3])
+			sync_server._rb_send_intermediate = true
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			input.set_multiplayer_authority(2)
+			servers.simulation_server().register_rollback_input_for(node, input)
+			register_rollback_state(sync_server, node)
+
+			for tick in range(1, 4):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) })
+			newest_loop(sync_server, 3)
+			for tick in range(4, 7):
+				record_state(tick, node, { ^"position": Vector3(tick, 0, 0) if tick != 5 else Vector3(4, 0, 0) })
+			record_state(7, node, { ^"position": Vector3(6, 0, 0) }, false)
+			newest_loop(sync_server, 7)
+
+			expect_equal(sent_newest(sync_server, 2, [node]), [
+				[[3, 0, { ^"position": Vector3(3, 0, 0) }]],
+				[[6, 0, { ^"position": Vector3(6, 0, 0) }]]
+			], "The input owner gets the newest only")
+			expect_equal(sent_newest(sync_server, 3, [node]), [
+				[[3, 0, { ^"position": Vector3(3, 0, 0) }]],
+				[[4, 0, { ^"position": Vector3(4, 0, 0) }], [6, 0, { ^"position": Vector3(6, 0, 0) }]]
+			], "Others each changed state since, in one packet")
+
+			servers.simulation_server().deregister_node(node)
+			input.queue_free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should ingest each subject's state at its own tick", func():
+			var receiver := NetworkSynchronizationServer
+			var node := await get_node("subject")
+			var other := await get_node("other")
+			var properties := _PropertyPool.new()
+			for subject in [node, other]:
+				NetworkIdentityServer.register_node(subject)
+				receiver.register_rollback_state(subject, ^"position")
+				NetworkHistoryServer.register_rollback_state(subject, ^"position")
+				properties.add(subject, ^"position")
+			set_clock_tick(10)
+			var data := _TickedSnapshotSerializer.new(_NetworkSchema.new()).write_for(1, 10, [
+				[node, 9, { ^"position": Vector3.ONE }], [other, 7, { ^"position": Vector3.UP }]
+			], properties)[0]
+
+			receiver._handle_newest_state(1, data)
+
+			expect_equal(NetworkHistoryServer.get_rollback_state_at(node, 9), { ^"position": Vector3.ONE })
+			expect_equal(NetworkHistoryServer.get_rollback_state_at(other, 7), { ^"position": Vector3.UP })
+			expect_equal([receiver.get_latest_received_state_tick_for(node), receiver.get_latest_received_state_tick_for(other)], [9, 7])
+
+			for subject in [node, other]:
+				receiver.deregister(subject)
+				NetworkIdentityServer.deregister_node(subject)
+			cleanup_global([node, other])
+		)
+
+		test("should send nothing for a subject without authoritative state", func():
+			var sync_server := await get_newest_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			for tick in range(1, 4):
+				record_state(tick, node, { ^"position": Vector3.ONE }, false)
+			newest_loop(sync_server, 3)
+
+			expect_empty(sent_newest(sync_server, 2, [node]))
+
+			cleanup(sync_server, [node])
+		)
+	)
+
 	define("owner-only state", func():
 		test("should send owner-only properties to the input owner only", func():
 			var sync_server := await get_peered_server([2, 3])
@@ -906,6 +1222,49 @@ func get_peered_server(peers: Array) -> PeeredSynchronizationServer:
 	servers.add_child.call_deferred(sync_server)
 	await sync_server.ready
 	return sync_server
+
+func get_newest_server(peers: Array) -> PeeredSynchronizationServer:
+	var sync_server := PeeredSynchronizationServer.new(servers.command_server(), servers.history_server(), servers.identity_server(), servers.simulation_server())
+	sync_server.peers = PackedInt32Array(peers)
+	sync_server._rb_send_newest_only = true
+	sync_server._rb_full_scheduler = _IntervalScheduler.new(0) # Only diffs
+	servers.add_child.call_deferred(sync_server)
+	await sync_server.ready
+	return sync_server
+
+# Record [param values] of [param node] at [param tick] in the sending history
+func record_state(tick: int, node: Node, values: Dictionary, is_auth: bool = true) -> void:
+	var record := servers.history_server()._rb_state_history.ensure_snapshot(tick, node, false)
+	for property in values:
+		record.set_value(property, values[property])
+	record.set_auth(is_auth)
+
+# Send the newest states after a rollback loop that recorded up to [param to]
+func newest_loop(sync_server: _NetworkSynchronizationServer, to: int) -> void:
+	NetworkMocks.set_network_tick(to)
+	sync_server._synchronize_newest_state(to)
+
+# Each newest state packet sent to [param peer], as [tick, index in
+# [param nodes], values] per subject, oldest first
+func sent_newest(sync_server: _NetworkSynchronizationServer, peer: int, nodes: Array, properties: Array[NodePath] = [^"position"]) -> Array:
+	var pool := _PropertyPool.new()
+	for node in nodes:
+		for property in properties:
+			pool.add(node, property)
+	var serializer := _TickedSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+
+	var result := []
+	for command in servers.command_server().commands_sent:
+		if command[2] != peer or command[0] != sync_server._cmd_newest_state._idx:
+			continue
+		var buffer := StreamPeerBuffer.new()
+		buffer.data_array = command[1]
+		var packet := []
+		for snapshot in serializer.read_from(1, pool, buffer, 64):
+			for subject in snapshot.get_subjects():
+				packet.append([snapshot.tick, nodes.find(subject), snapshot._data[subject]])
+		result.append(packet)
+	return result
 
 func register_sync_state(sync_server: _NetworkSynchronizationServer, node: Node) -> void:
 	servers.identity_server().register_node(node)

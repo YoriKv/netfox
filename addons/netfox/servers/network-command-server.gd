@@ -97,6 +97,7 @@ class Command:
 	var _mode: MultiplayerPeer.TransferMode
 	var _channel: int
 	var _sent_bytes: int = 0
+	var _sent_packets: int = 0
 
 	func _init(p_command_server: _NetworkCommandServer, p_idx: int, p_handler: Callable, p_mode: MultiplayerPeer.TransferMode, p_channel: int) -> void:
 		_command_server = p_command_server
@@ -108,12 +109,17 @@ class Command:
 	## Send command
 	func send(data: PackedByteArray, target_peer: int = 0) -> void:
 		_sent_bytes += data.size()
+		_sent_packets += 1
 		_command_server.send_command(_idx, data, target_peer, _mode, _channel)
 
 	## Get the total bytes of data sent with this command, not counting the
 	## transport's own overhead
 	func get_sent_bytes() -> int:
 		return _sent_bytes
+
+	## Get the number of times this command was sent
+	func get_sent_packets() -> int:
+		return _sent_packets
 
 	func _handle(sender: int, data: PackedByteArray) -> void:
 		_handler.call(sender, data)

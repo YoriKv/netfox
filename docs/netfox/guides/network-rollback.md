@@ -237,6 +237,35 @@ from the poses at hand, e.g. whether the node's received or previous position is
 within reach of the local avatar, given how far both can move since `tick`.
 Unset, no such state starts a resimulation.
 
+*Send newest state only* changes when rollback state is sent. Off, the
+default, the state of every tick a rollback loop resimulates is sent, to each
+peer that sees a node whose state changed at that tick, so a tick goes out
+again each time a late input changes it. On, state is sent once per loop: each
+peer gets, for each node it sees, the node's newest authoritative state - the
+tick its owner's newest input simulated, which differs from node to node - if
+it differs from the one it was last sent, all in one packet with a tick per
+node. A diff state is then relative to the state last sent to that peer, and a
+node is sent in full when the peer starts seeing it and with every full state
+that finds a newer state of it - a node waiting for its owner's input, e.g. as
+the owner disconnects, is sent nothing.
+The server prepares and serializes one state per loop instead of one per
+resimulated tick.
+
+The owner of a node reconciles from its newest state either way. A peer that
+only displays the node, e.g. interpolating between the states received, gets
+fewer of them: a burst of ticks made authoritative in one loop arrives as its
+newest only, and the ticks before it keep the previous state received. A peer
+whose own nodes are simulated against the node's past ticks, e.g. in contact,
+meets those ticks as held, not as simulated. Every peer must run with the same
+value.
+
+*Send intermediate states to others*, with *Send newest state only*, also sends
+a peer that does not own one of a node's inputs every state of the node that
+became authoritative since the one it was last sent, in the same packet. Such a
+peer then holds every tick of the node, as without the setting, for its own
+nodes to meet when they are resimulated, e.g. in contact; the input owner still
+gets the newest state only.
+
 *Debug resimulate ticks* makes every rollback loop resimulate at least this
 many ticks, even when no new input or state arrived. A side effect that is not
 safe to replay - a sound, a spawn, a counter outside of state - then happens

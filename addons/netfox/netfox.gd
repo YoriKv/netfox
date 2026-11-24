@@ -172,6 +172,20 @@ var SETTINGS: Array[Dictionary] = [
 		"type": TYPE_BOOL
 	},
 	{
+		# Send each peer only the newest authoritative state of each node it
+		# sees, once per rollback loop, instead of every resimulated tick
+		"name": "netfox/rollback/send_newest_state_only",
+		"value": false,
+		"type": TYPE_BOOL
+	},
+	{
+		# With send_newest_state_only, also send the peers that do not own a
+		# node's input each state that became authoritative since the last sent
+		"name": "netfox/rollback/send_intermediate_states_to_others",
+		"value": false,
+		"type": TYPE_BOOL
+	},
+	{
 		# Debug: resimulate at least this many ticks in every rollback loop
 		"name": "netfox/rollback/debug_resimulate_ticks",
 		"value": 0,

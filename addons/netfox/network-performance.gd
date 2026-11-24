@@ -23,6 +23,8 @@ const INPUT_LATENESS_MAX_MONITOR: StringName = &"netfox/Input lateness max (tick
 const SENT_STATE_BYTES_MONITOR: StringName = &"netfox/Sent rollback state bytes"
 const SENT_INPUT_BYTES_MONITOR: StringName = &"netfox/Sent input bytes"
 const SENT_SYNC_STATE_BYTES_MONITOR: StringName = &"netfox/Sent sync state bytes"
+const SENT_STATE_PACKETS_MONITOR: StringName = &"netfox/Sent rollback state packets"
+const SENT_SYNC_STATE_PACKETS_MONITOR: StringName = &"netfox/Sent sync state packets"
 const INPUTS_REFUSED_MONITOR: StringName = &"netfox/Inputs refused"
 const INPUTS_STARVED_MONITOR: StringName = &"netfox/Inputs starved"
 
@@ -64,6 +66,8 @@ var _input_lateness_window_end: int = -1
 # Bytes handed to NetworkCommandServer, per command kind
 var _sent_bytes := {} # command kind to bytes sent in the last tick loop
 var _sent_bytes_totals := {} # command kind to total bytes at the last tick loop
+var _sent_packets := {} # command kind to packets sent in the last tick loop
+var _sent_packets_totals := {} # command kind to total packets at the last tick loop
 
 var _inputs_refused: int = 0
 var _inputs_refused_accum: int = 0
@@ -292,6 +296,16 @@ func get_sent_input_bytes() -> int:
 func get_sent_sync_state_bytes() -> int:
 	return _sent_bytes.get(&"sync", 0)
 
+## Get the number of rollback state packets handed to [_NetworkCommandServer]
+## during the last tick loop, to all peers together.
+func get_sent_state_packets() -> int:
+	return _sent_packets.get(&"state", 0)
+
+## Get the number of [StateSynchronizer] state packets handed to
+## [_NetworkCommandServer] during the last tick loop, to all peers together.
+func get_sent_sync_state_packets() -> int:
+	return _sent_packets.get(&"sync", 0)
+
 func _ready() -> void:
 	_enabled = is_enabled()
 	if not _enabled:
@@ -319,6 +333,8 @@ func _ready() -> void:
 	Performance.add_custom_monitor(SENT_STATE_BYTES_MONITOR, get_sent_state_bytes)
 	Performance.add_custom_monitor(SENT_INPUT_BYTES_MONITOR, get_sent_input_bytes)
 	Performance.add_custom_monitor(SENT_SYNC_STATE_BYTES_MONITOR, get_sent_sync_state_bytes)
+	Performance.add_custom_monitor(SENT_STATE_PACKETS_MONITOR, get_sent_state_packets)
+	Performance.add_custom_monitor(SENT_SYNC_STATE_PACKETS_MONITOR, get_sent_sync_state_packets)
 	Performance.add_custom_monitor(INPUTS_REFUSED_MONITOR, get_inputs_refused)
 	Performance.add_custom_monitor(INPUTS_STARVED_MONITOR, get_inputs_starved)
 
@@ -362,7 +378,7 @@ func _after_tick_loop() -> void:
 		_input_lateness_window_end = NetworkTime.tick + NetworkTime.tickrate
 
 	var sync_server := NetworkSynchronizationServer
-	_update_sent_bytes(&"state", [sync_server._cmd_full_state, sync_server._cmd_diff_state])
+	_update_sent_bytes(&"state", [sync_server._cmd_full_state, sync_server._cmd_diff_state, sync_server._cmd_newest_state])
 	_update_sent_bytes(&"input", [sync_server._cmd_input])
 	_update_sent_bytes(&"sync", [sync_server._cmd_full_sync, sync_server._cmd_diff_sync])
 
@@ -385,11 +401,15 @@ func _after_rollback_loop() -> void:
 
 func _update_sent_bytes(kind: StringName, commands: Array) -> void:
 	var total := 0
+	var packets := 0
 	for command in commands:
 		if command:
 			total += (command as NetworkCommandServer.Command).get_sent_bytes()
+			packets += (command as NetworkCommandServer.Command).get_sent_packets()
 	_sent_bytes[kind] = total - _sent_bytes_totals.get(kind, total)
 	_sent_bytes_totals[kind] = total
+	_sent_packets[kind] = packets - _sent_packets_totals.get(kind, packets)
+	_sent_packets_totals[kind] = packets
 
 func _time() -> float:
 	return Time.get_unix_time_from_system()

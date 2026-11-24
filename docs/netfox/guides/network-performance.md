@@ -100,12 +100,14 @@ missing input, gaps and silences alike, see *Input starvation ticks* on
 [RollbackSynchronizer]. `get_inputs_starved_total()` returns the count since
 startup.
 
-### Sent bytes
+### Sent bytes and packets
 
 *Sent rollback state bytes*, *Sent input bytes* and *Sent sync state bytes*
 measure the data handed to [NetworkCommandServer] during the last tick loop,
-without the transport's overhead. Each command also counts its own bytes, see
-`Command.get_sent_bytes()`.
+without the transport's overhead. *Sent rollback state packets* and *Sent sync
+state packets* count the packets, to all peers together; each packet also costs
+the transport's headers. Each command also counts its own bytes and packets,
+see `Command.get_sent_bytes()` and `Command.get_sent_packets()`.
 
 [NetworkRollback]: ./network-rollback.md
 [RollbackSynchronizer]: ../nodes/rollback-synchronizer.md
