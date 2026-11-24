@@ -21,6 +21,10 @@ var _sync_history_size := ProjectSettings.get_setting("netfox/state_synchronizer
 
 var _ignored_subjects := _Set.new()
 
+# Input subjects whose input for a tick was received or recorded since the last
+# rollback loop, for the performance monitors
+var _new_inputs := {} # tick to _Set of input subjects
+
 # Source of truth for history
 var _rb_input_history := _PerObjectHistory.new(_rb_history_size)
 var _rb_state_history := _PerObjectHistory.new(_rb_history_size)
@@ -90,6 +94,7 @@ func reset() -> void:
 	_sync_state_snapshots = _HistoryBuffer.new(_sync_history_size)
 
 	_ignored_subjects.clear()
+	_new_inputs.clear()
 
 ## Do not record [param subject]
 ## [br][br]
@@ -173,6 +178,11 @@ func _record_rollback_input(tick: int) -> void:
 		return subject.is_multiplayer_authority()
 	)
 
+	if NetworkPerformance._enabled:
+		for subject in _rb_input_properties.get_subjects_raw():
+			if (subject as Node).is_multiplayer_authority():
+				_add_new_input(tick, subject)
+
 func _record_rollback_state(tick: int) -> void:
 	var input_snapshot := _get_rollback_input_snapshot(tick - 1)
 
@@ -210,14 +220,74 @@ func _get_synchronizer_state_snapshot(tick: int) -> _Snapshot:
 func _merge_rollback_input(snapshot: _Snapshot) -> bool:
 	if not _can_merge_tick(snapshot.tick, _rb_input_history):
 		return false
+
+	if NetworkPerformance._enabled:
+		for subject in snapshot.get_auth_subjects():
+			if not _rb_input_history.is_auth(snapshot.tick, subject):
+				_add_new_input(snapshot.tick, subject)
+
 	_merge_snapshot(snapshot, _rb_input_snapshots, true)
 	return _merge_history(snapshot, _rb_input_history, true)
 
 func _merge_rollback_state(snapshot: _Snapshot) -> bool:
 	if not _can_merge_tick(snapshot.tick, _rb_state_history):
 		return false
+
+	var corrections := _find_corrections(snapshot)
+
 	_merge_snapshot(snapshot, _rb_state_snapshots)
-	return _merge_history(snapshot, _rb_state_history)
+	var has_updated := _merge_history(snapshot, _rb_state_history)
+
+	for correction in corrections:
+		NetworkRollback.on_correction.emit(correction[0], snapshot.tick, correction[1])
+	return has_updated
+
+# Return [subject, properties] for each subject simulated here whose recorded
+# state at the snapshot's tick differs from the snapshot, counting them
+# Does nothing if neither the signal nor the monitors need it
+func _find_corrections(snapshot: _Snapshot) -> Array:
+	var result := []
+	var is_signal_connected := not NetworkRollback.on_correction.get_connections().is_empty()
+	if not is_signal_connected and not NetworkPerformance._enabled:
+		return result
+
+	var count := 0
+	for subject in snapshot.get_auth_subjects():
+		var recorded := _rb_state_history.get_snapshot(snapshot.tick, subject)
+		if recorded == null or not RollbackSimulationServer._is_simulated_locally(subject):
+			continue
+
+		var properties := {}
+		for property in snapshot.get_subject_properties(subject):
+			if not recorded.has_value(property):
+				continue
+			var recorded_value = recorded.get_value(property)
+			var received_value = snapshot.get_property(subject, property)
+			if recorded_value != received_value:
+				properties[property] = [recorded_value, received_value]
+
+		if properties.is_empty():
+			continue
+		count += 1
+		if is_signal_connected:
+			result.append([subject, properties])
+
+	NetworkPerformance.push_corrections(count)
+	return result
+
+func _add_new_input(tick: int, subject: Object) -> void:
+	if not _new_inputs.has(tick):
+		_new_inputs[tick] = _Set.new()
+	(_new_inputs[tick] as _Set).add(subject)
+
+# Return true if input for [param subject] at [param tick] was received or
+# recorded since the last rollback loop. Only tracked with performance
+# monitoring enabled.
+func _is_input_new(tick: int, subject: Object) -> bool:
+	return _new_inputs.has(tick) and (_new_inputs[tick] as _Set).has(subject)
+
+func _clear_new_inputs() -> void:
+	_new_inputs.clear()
 
 func _merge_synchronizer_state(snapshot: _Snapshot) -> bool:
 	if not _can_merge_tick(snapshot.tick, _sync_history):

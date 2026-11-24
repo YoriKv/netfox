@@ -171,11 +171,22 @@ signal on_record_tick(tick: int)
 ## Event emitted after running the network rollback loop.
 signal after_loop()
 
+## Event emitted when an authoritative state received for [param node] differs
+## from the state recorded for the same [param tick], for a node this peer
+## simulates - it owns one of the node's inputs, the node has no input, or
+## prediction is enabled for it.
+## [br][br]
+## [param properties] maps each property path that differed to an array of
+## [code][recorded, received][/code] values. Emitted as the state is received,
+## before the rollback loop that resimulates from it.
+signal on_correction(node: Node, tick: int, properties: Dictionary)
+
 # Settings
 var _history_limit: int = ProjectSettings.get_setting(&"netfox/rollback/history_limit", 64)
 var _display_offset: int = ProjectSettings.get_setting(&"netfox/rollback/display_offset", 0)
 var _input_delay: int = ProjectSettings.get_setting(&"netfox/rollback/input_delay", 0)
 var _input_redundancy: int = ProjectSettings.get_setting(&"netfox/rollback/input_redundancy", 3)
+var _debug_resimulate_ticks: int = ProjectSettings.get_setting(&"netfox/rollback/debug_resimulate_ticks", 0)
 
 # Timing
 var _tick: int = 0
@@ -418,6 +429,9 @@ func _rollback() -> void:
 	if _earliest_state >= 0 and _earliest_state <= _resim_from:
 		range_source = "latest state"
 		_resim_from = _earliest_state
+	if _debug_resimulate_ticks > 0 and NetworkTime.tick - _debug_resimulate_ticks < _resim_from:
+		range_source = "debug resimulation"
+		_resim_from = NetworkTime.tick - _debug_resimulate_ticks
 	_resim_from = mini(_resim_from, NetworkTime.tick - 1)
 	_logger.trace("Simulating range @%d>@%d using %s", [_resim_from, NetworkTime.tick, range_source])
 
@@ -486,6 +500,7 @@ func _rollback() -> void:
 	RollbackLivenessServer.restore_liveness(display_tick)
 	RollbackSimulationServer._trim_ticks_simulated(history_start)
 	RollbackLivenessServer.destroy_old_subjects(history_start)
+	NetworkHistoryServer._clear_new_inputs()
 
 	# Cleanup
 	_mutated_nodes.clear()

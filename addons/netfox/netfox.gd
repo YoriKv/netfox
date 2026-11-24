@@ -146,6 +146,14 @@ var SETTINGS: Array[Dictionary] = [
 		"hint": PROPERTY_HINT_RANGE,
 		"hint_string": "0,60,or_greater"
 	},
+	{
+		# Debug: resimulate at least this many ticks in every rollback loop
+		"name": "netfox/rollback/debug_resimulate_ticks",
+		"value": 0,
+		"type": TYPE_INT,
+		"hint": PROPERTY_HINT_RANGE,
+		"hint_string": "0,16,or_greater"
+	},
 	# StateSynchronizer
 	{
 		"name": "netfox/state_synchronizer/enable_diff_states",

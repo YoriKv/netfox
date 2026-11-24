@@ -145,6 +145,20 @@ All tracked nodes can be retrieved from
 `NetworkRollback.get_input_submissions()` which will return the entire
 `<root_node, latest_tick>` dictionary.
 
+## Corrections
+
+When a peer receives an authoritative state for a node it simulates - it owns
+one of the node's inputs, the node has no input, or prediction is enabled for
+it - and the state differs from the one it recorded for the same tick, the
+peer's prediction was wrong. *NetworkRollback* emits `on_correction(node, tick,
+properties)` for each such node, with `properties` mapping each property path
+that differed to `[recorded, received]`. Nothing is compared while the signal
+has no connections and performance monitoring is disabled.
+
+The signal fires as the state is received, before the rollback loop that
+resimulates from it. Use it to log which properties diverge, or to smooth the
+displayed correction.
+
 ## Settings
 
 ![Network rollback settings](../assets/network-rollback-settings.png)
@@ -181,6 +195,12 @@ the network latency is smaller than the input latency.
     true.
 
     This happens when network latency is smaller than the input delay.
+
+*Debug resimulate ticks* makes every rollback loop resimulate at least this
+many ticks, even when no new input or state arrived. A side effect that is not
+safe to replay - a sound, a spawn, a counter outside of state - then happens
+again in every loop, which makes it easy to spot. Leave it at zero outside of
+testing.
 
 *Enable diff states* toggles diff states. By sending only state properties that
 have changed, netfox can reduce the bandwidth needed to synchronize the game

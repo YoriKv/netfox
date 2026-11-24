@@ -66,6 +66,12 @@ func restore_latest(tick: int) -> bool:
 			any_applied = true
 	return any_applied
 
+# Return the snapshot recorded for exactly [param tick], or null
+func get_snapshot(tick: int, subject: Object) -> _ObjectSnapshot:
+	if not _data.has(subject):
+		return null
+	return (_data[subject] as _HistoryBuffer).get_at(tick) as _ObjectSnapshot
+
 func get_latest_snapshot(tick: int, subject: Object) -> _ObjectSnapshot:
 	if not _data.has(subject):
 		return null

@@ -127,6 +127,8 @@ func simulate(delta: float, tick: int) -> void:
 			_predicted_nodes.add(node)
 
 	# Run callbacks and clear group
+	var fresh_count := 0
+	var new_input_count := 0
 	for node in nodes:
 		_current_object = node
 
@@ -137,8 +139,16 @@ func simulate(delta: float, tick: int) -> void:
 		_current_object = null
 		_set_tick_simulated_for(node, tick)
 
+		if NetworkPerformance._enabled:
+			if is_fresh:
+				fresh_count += 1
+			if _has_new_input(node, tick):
+				new_input_count += 1
+
 	# Metrics
 	NetworkPerformance.push_rollback_nodes_simulated(nodes.size())
+	NetworkPerformance.push_rollback_nodes_fresh(fresh_count)
+	NetworkPerformance.push_rollback_nodes_with_new_input(new_input_count)
 
 # Returns nodes in scene tree order
 func _get_nodes_to_simulate(input_snapshot: _Snapshot) -> Array[Node]:
@@ -199,6 +209,26 @@ func _is_predicting(input_snapshot: _Snapshot, node: Node) -> bool:
 		# We own the node, node depends on input, we don't have data for input - predict
 		return true
 	# We own the node and we have data for node's input - we're sure
+	return false
+
+# Return true if this peer simulates [param node] as a matter of course: it has
+# no input, this peer owns one of its inputs, or prediction is enabled for it
+func _is_simulated_locally(node: Node) -> bool:
+	if is_prediction_enabled_for(node):
+		return true
+
+	var inputs := _input_graph.get_linked_to(node)
+	if inputs.is_empty():
+		return true
+	for input in inputs:
+		if (input as Node).is_multiplayer_authority():
+			return true
+	return false
+
+func _has_new_input(node: Node, tick: int) -> bool:
+	for input in _input_graph.get_linked_to(node):
+		if NetworkHistoryServer._is_input_new(tick, input):
+			return true
 	return false
 
 func _is_tick_fresh_for(node: Node, tick: int) -> bool:

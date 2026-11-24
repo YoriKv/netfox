@@ -64,6 +64,38 @@ This can be useful to determine if the rollback tick duration comes from too
 many ticks being simulated, or the individual ticks being expensive to
 simulate ( or both ).
 
+### Rollback nodes simulated
+
+*Rollback nodes simulated* counts the node-ticks run in the last [rollback
+loop]. Of those, *Rollback nodes simulated fresh* were run for the first time
+for their tick, and *Rollback nodes simulated with new input* had input for
+their tick that was received or recorded since the loop before. Node-ticks
+outside both reran a tick with nothing new for that node.
+
+### Corrections
+
+*Corrections* counts the authoritative states received during the last tick
+loop that differed from the state recorded for a node this peer simulates. See
+[NetworkRollback] for the `on_correction` signal, which tells which properties
+differed. `get_corrections_total()` returns the count since startup.
+
+### Input lateness
+
+*Input lateness mean* and *max* measure, on the receiving peer, how far behind
+the current tick each accepted input tick was on arrival, over the last second.
+Negative values mean the input arrived early. Inputs recovered from redundancy
+count with their own tick. Per peer values are available with
+`get_input_lateness_mean(peer)` and `get_input_lateness_max(peer)`.
+
+### Sent bytes
+
+*Sent rollback state bytes*, *Sent input bytes* and *Sent sync state bytes*
+measure the data handed to [NetworkCommandServer] during the last tick loop,
+without the transport's overhead. Each command also counts its own bytes, see
+`Command.get_sent_bytes()`.
+
+[NetworkRollback]: ./network-rollback.md
+[NetworkCommandServer]: ./network-command-server.md
 [custom monitors]: https://docs.godotengine.org/en/latest/classes/class_performance.html#class-performance-method-add-custom-monitor
 [network tick loop]: ./network-time.md
 [rollback loop]: ./network-rollback.md

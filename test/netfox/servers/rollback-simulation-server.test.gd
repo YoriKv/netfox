@@ -107,6 +107,65 @@ func suite() -> void:
 		)
 	)
 
+	define("_is_simulated_locally()", func():
+		test("should simulate inputless", func():
+			var node := await get_node()
+			expect(simulation_server._is_simulated_locally(node))
+		)
+
+		test("should simulate with owned input", func():
+			var node := await get_node()
+			var input := await get_node()
+			simulation_server.register_rollback_input_for(node, input)
+			expect(simulation_server._is_simulated_locally(node))
+		)
+
+		test("should not simulate with remote input", func():
+			var node := await get_node()
+			var input := await get_node()
+			input.set_multiplayer_authority(2)
+			simulation_server.register_rollback_input_for(node, input)
+			expect_not(simulation_server._is_simulated_locally(node))
+		)
+
+		test("should simulate with remote input and prediction", func():
+			var node := await get_node()
+			var input := await get_node()
+			input.set_multiplayer_authority(2)
+			simulation_server.register_rollback_input_for(node, input)
+			simulation_server.set_prediction_enabled_for(node, true)
+			expect(simulation_server._is_simulated_locally(node))
+		)
+	)
+
+	define("simulate()", func():
+		test("should count simulated nodes with new input", func():
+			var fresh := await get_rewindable_node()
+			var known := await get_rewindable_node()
+			var fresh_input := await get_node()
+			var known_input := await get_node()
+			for pair in [[fresh, fresh_input], [known, known_input]]:
+				simulation_server.register(pair[0]._rollback_tick)
+				simulation_server.register_rollback_input_for(pair[0], pair[1])
+			NetworkHistoryServer._rb_input_snapshots.set_at(4, _Snapshot.of(4, [
+				[fresh_input, ^"name", "a"], [known_input, ^"name", "b"]
+			], [fresh_input, known_input]))
+			NetworkHistoryServer._add_new_input(4, fresh_input)
+			simulation_server._set_tick_simulated_for(known, 4)
+			var simulated_before := NetworkPerformance._rollback_nodes_simulated_accum
+			var new_input_before := NetworkPerformance._rollback_nodes_new_input_accum
+			var fresh_before := NetworkPerformance._rollback_nodes_fresh_accum
+
+			simulation_server.simulate(1. / 30., 4)
+
+			expect_equal(NetworkPerformance._rollback_nodes_simulated_accum - simulated_before, 2)
+			expect_equal(NetworkPerformance._rollback_nodes_new_input_accum - new_input_before, 1)
+			expect_equal(NetworkPerformance._rollback_nodes_fresh_accum - fresh_before, 1)
+
+			NetworkHistoryServer.reset()
+		)
+	)
+
 	define("reset()", func():
 		test("should forget simulated ticks", func():
 			var node := await get_node()

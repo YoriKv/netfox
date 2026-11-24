@@ -567,6 +567,7 @@ func _ingest_input(sender: int, snapshot: _Snapshot) -> void:
 
 	_logger.trace("Ingesting input: %s", [snapshot])
 	if NetworkHistoryServer._merge_rollback_input(snapshot):
+		NetworkPerformance.push_input_lateness(sender, NetworkTime.tick - snapshot.tick)
 		_on_input.emit(snapshot)
 
 func _ingest_state(sender: int, snapshot: _Snapshot) -> void:

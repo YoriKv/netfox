@@ -12,6 +12,8 @@ func before_case(__):
 
 func after_case(__):
 	NetworkMocks.set_tick(0, 0)
+	NetworkHistoryServer.reset()
+	RollbackSimulationServer.reset()
 	network_rollback.queue_free()
 	mutated_node.queue_free()
 
@@ -79,6 +81,47 @@ func suite() -> void:
 
 			expect_equal(network_rollback.loop_from, 3)
 			expect_equal(network_rollback.loop_to, 7)
+		)
+	)
+
+	define("debug resimulation", func():
+		test("should resimulate at least the configured ticks", func():
+			# Given
+			NetworkMocks.set_network_tick(100)
+			network_rollback._debug_resimulate_ticks = 8
+
+			# When
+			network_rollback._rollback()
+
+			# Then
+			expect_equal(network_rollback._rollback_from, 92)
+			expect_equal(network_rollback._rollback_to, 100)
+		)
+
+		test("should keep an earlier start", func():
+			# Given
+			NetworkMocks.set_network_tick(100)
+			network_rollback._debug_resimulate_ticks = 8
+			network_rollback.before_loop.connect(func():
+				network_rollback.notify_resimulation_start(80)
+			)
+
+			# When
+			network_rollback._rollback()
+
+			# Then
+			expect_equal(network_rollback._rollback_from, 80)
+		)
+
+		test("should resimulate one tick by default", func():
+			# Given
+			NetworkMocks.set_network_tick(100)
+
+			# When
+			network_rollback._rollback()
+
+			# Then
+			expect_equal(network_rollback._rollback_from, 99)
 		)
 	)
 

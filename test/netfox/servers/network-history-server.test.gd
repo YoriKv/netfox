@@ -65,6 +65,103 @@ func suite() -> void:
 			expect_equal(history_server.get_latest_state_tick_for([subject], 120), -1)
 		)
 	)
+
+	define("on_correction", func():
+		test("should report differing properties of a locally simulated node", func():
+			var node := await get_node()
+			var input := await get_node()
+			RollbackSimulationServer.register_rollback_input_for(node, input)
+			var corrections := record_corrections()
+			var history_server := servers.history_server()
+			var corrections_before := NetworkPerformance.get_corrections_total()
+
+			# Recorded as predicted, then received from the server
+			history_server._rb_state_history.set_property(4, node, ^"position", Vector3.ZERO)
+			history_server._rb_state_history.set_property(4, node, ^"scale", Vector3.ONE)
+			history_server._merge_rollback_state(_Snapshot.of(4, [
+				[node, ^"position", Vector3.UP],
+				[node, ^"scale", Vector3.ONE]
+			], [node]))
+
+			expect_equal(corrections, [[node, 4, { ^"position": [Vector3.ZERO, Vector3.UP] }]])
+			expect_equal(NetworkPerformance.get_corrections_total() - corrections_before, 1)
+
+			disconnect_corrections()
+			RollbackSimulationServer.deregister_node(node)
+			node.queue_free()
+			input.queue_free()
+		)
+
+		test("should not report matching state", func():
+			var node := await get_node()
+			var corrections := record_corrections()
+			var history_server := servers.history_server()
+
+			history_server._rb_state_history.set_property(4, node, ^"position", Vector3.UP)
+			history_server._merge_rollback_state(_Snapshot.of(4, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_empty(corrections)
+
+			disconnect_corrections()
+			node.queue_free()
+		)
+
+		test("should not report a node simulated elsewhere", func():
+			var node := await get_node()
+			var input := await get_node()
+			input.set_multiplayer_authority(2)
+			RollbackSimulationServer.register_rollback_input_for(node, input)
+			var corrections := record_corrections()
+			var history_server := servers.history_server()
+			var corrections_before := NetworkPerformance.get_corrections_total()
+
+			history_server._rb_state_history.set_property(4, node, ^"position", Vector3.ZERO)
+			history_server._merge_rollback_state(_Snapshot.of(4, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_empty(corrections)
+			expect_equal(NetworkPerformance.get_corrections_total(), corrections_before)
+
+			disconnect_corrections()
+			RollbackSimulationServer.deregister_node(node)
+			node.queue_free()
+			input.queue_free()
+		)
+
+		test("should report a node simulated elsewhere with prediction", func():
+			var node := await get_node()
+			var input := await get_node()
+			input.set_multiplayer_authority(2)
+			RollbackSimulationServer.register_rollback_input_for(node, input)
+			RollbackSimulationServer.set_prediction_enabled_for(node, true)
+			var corrections := record_corrections()
+			var history_server := servers.history_server()
+
+			history_server._rb_state_history.set_property(4, node, ^"position", Vector3.ZERO)
+			history_server._merge_rollback_state(_Snapshot.of(4, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_equal(corrections.size(), 1)
+
+			disconnect_corrections()
+			RollbackSimulationServer.deregister_node(node)
+			node.queue_free()
+			input.queue_free()
+		)
+
+		test("should not report a tick without recorded state", func():
+			var node := await get_node()
+			var corrections := record_corrections()
+			var history_server := servers.history_server()
+
+			history_server._rb_state_history.set_property(3, node, ^"position", Vector3.ZERO)
+			history_server._merge_rollback_state(_Snapshot.of(4, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_empty(corrections)
+
+			disconnect_corrections()
+			node.queue_free()
+		)
+	)
+
 	define("push_rollback_state()", func():
 		test("should create a snapshot at spawn tick", func():
 			subject.tracked_value = 42
@@ -198,6 +295,19 @@ func suite() -> void:
 			expect_null(history_server._get_rollback_state_snapshot(500))
 		)
 	)
+
+var _correction_handler: Callable
+
+# Each correction emitted, as [node, tick, properties], until disconnected
+func record_corrections() -> Array:
+	var result := []
+	_correction_handler = func(node: Node, tick: int, properties: Dictionary):
+		result.append([node, tick, properties])
+	NetworkRollback.on_correction.connect(_correction_handler)
+	return result
+
+func disconnect_corrections() -> void:
+	NetworkRollback.on_correction.disconnect(_correction_handler)
 
 func create_subject() -> StateNode:
 	var node := StateNode.new()

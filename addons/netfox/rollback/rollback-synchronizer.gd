@@ -112,11 +112,13 @@ func process_settings() -> void:
 			RollbackLivenessServer.register(node, spawn_callback, despawn_callback, free_callback, spawn_tick)
 			_liveness_nodes.append(node)
 
-	# Both simulated and state nodes depend on all inputs
+	# Both simulated and state nodes depend on all inputs, and are predicted
+	# together
 	# TODO(#564): Write tests for setups where a node is synchronized but not simulated
 	for node in _sim_nodes + _state_properties.get_subjects():
 		for input_node in _input_properties.get_subjects():
 			RollbackSimulationServer.register_rollback_input_for(node, input_node)
+		RollbackSimulationServer.set_prediction_enabled_for(node, enable_prediction)
 
 	# Register identifiers
 	for node in _state_properties.get_subjects() + _input_properties.get_subjects():
@@ -459,7 +461,7 @@ func _reprocess_settings() -> void:
 	process_settings()
 
 func _set_prediction_enabled(enabled: bool) -> void:
-	for node in _sim_nodes:
+	for node in _sim_nodes + _state_properties.get_subjects():
 		RollbackSimulationServer.set_prediction_enabled_for(node, enabled)
 
 # Find managed nodes recursively from given root, ignoring branches managed by
