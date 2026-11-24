@@ -87,6 +87,12 @@ Negative values mean the input arrived early. Inputs recovered from redundancy
 count with their own tick. Per peer values are available with
 `get_input_lateness_mean(peer)` and `get_input_lateness_max(peer)`.
 
+### Inputs refused
+
+*Inputs refused* counts the input ticks refused during the last tick loop for
+falling outside of the accepted range, see [NetworkRollback]'s settings.
+`get_inputs_refused_by(peer)` returns the total per peer.
+
 ### Sent bytes
 
 *Sent rollback state bytes*, *Sent input bytes* and *Sent sync state bytes*

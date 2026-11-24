@@ -38,6 +38,8 @@ var _rb_full_interval := ProjectSettings.get_setting("netfox/rollback/full_state
 var _rb_full_scheduler := _IntervalScheduler.new(_rb_full_interval)
 
 var _input_redundancy := NetworkRollback.input_redundancy
+var _input_max_late := ProjectSettings.get_setting("netfox/rollback/input_max_late_ticks", -1) as int
+var _input_max_early := ProjectSettings.get_setting("netfox/rollback/input_max_early_ticks", 4) as int
 
 var _rb_sent_state_history := {} # peer to _HistoryBuffer of _Snapshot
 var _rb_latest_received_state := {} # Node to tick
@@ -69,6 +71,15 @@ static var _logger := NetfoxLogger._for_netfox("NetworkSynchronizationServer")
 
 signal _on_input(snapshot: _Snapshot)
 signal _on_state(snapshot: _Snapshot)
+
+## Emitted when input for [param tick] from [param peer] is refused, as it falls
+## outside of the ticks input is accepted for.
+## [br][br]
+## Input is accepted for ticks from [code]netfox/rollback/input_max_late_ticks[/code]
+## before the current tick, up to [code]netfox/rollback/input_max_early_ticks[/code]
+## after it, plus the input delay. Redundant copies of input already received are
+## dropped without a refusal.
+signal on_input_refused(peer: int, tick: int)
 
 ## Register a [param property] of [param node] to be synchronized
 ## as rollback state
@@ -562,16 +573,69 @@ func _make_subject_snapshot(subject: Node, tick: int, values: Dictionary) -> _Sn
 	snapshot.set_auth(subject, true)
 	return snapshot
 
+## Return the earliest tick input is accepted for
+## [br][br]
+## See [signal on_input_refused].
+func get_earliest_input_tick() -> int:
+	if _input_max_late < 0:
+		return NetworkRollback.history_start
+	return maxi(NetworkTime.tick - _input_max_late, NetworkRollback.history_start)
+
+## Return the latest tick input is accepted for
+## [br][br]
+## Measured from the later of the current tick and the reference clock's tick,
+## so input sent in time is not refused while catching up after a hitch. States
+## are not accepted past it either. See [signal on_input_refused].
+func get_latest_input_tick() -> int:
+	if _input_max_early < 0:
+		return 1 << 62
+	var now := maxi(NetworkTime.tick, NetworkTime.seconds_to_ticks(NetworkTimeSynchronizer.get_time()))
+	return now + NetworkRollback.input_delay + _input_max_early
+
 func _ingest_input(sender: int, snapshot: _Snapshot) -> void:
 	snapshot.sanitize(sender)
+	if not _is_input_accepted(sender, snapshot):
+		return
 
 	_logger.trace("Ingesting input: %s", [snapshot])
 	if NetworkHistoryServer._merge_rollback_input(snapshot):
 		NetworkPerformance.push_input_lateness(sender, NetworkTime.tick - snapshot.tick)
 		_on_input.emit(snapshot)
 
+# Input from before a stall is left to the history server to drop. Too late
+# input that is already known is a redundant copy, dropped without a refusal.
+func _is_input_accepted(sender: int, snapshot: _Snapshot) -> bool:
+	var tick := snapshot.tick
+	if snapshot.is_empty():
+		return false
+	if tick < NetworkRollback._history_floor:
+		return true
+
+	if tick > get_latest_input_tick():
+		_refuse_input(sender, tick, "too early")
+		return false
+
+	if tick < get_earliest_input_tick():
+		for subject in snapshot.get_auth_subjects():
+			if not NetworkHistoryServer._rb_input_history.is_auth(tick, subject):
+				_refuse_input(sender, tick, "too late")
+				return false
+		return false
+
+	return true
+
+func _refuse_input(sender: int, tick: int, reason: String) -> void:
+	_logger.debug("Refusing input @%d from #%d, %s", [tick, sender, reason])
+	NetworkPerformance.push_input_refused(sender)
+	on_input_refused.emit(sender, tick)
+
 func _ingest_state(sender: int, snapshot: _Snapshot) -> void:
 	snapshot.sanitize(sender)
+
+	if snapshot.tick > get_latest_input_tick():
+		_logger.debug("Refusing state @%d from #%d, too early", [snapshot.tick, sender])
+		NetworkPerformance.push_state_refused()
+		return
 
 	for subject in snapshot.get_subjects():
 		if snapshot.is_auth(subject) and snapshot.tick > _rb_latest_received_state.get(subject, -1):

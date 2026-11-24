@@ -130,6 +130,24 @@ var SETTINGS: Array[Dictionary] = [
 		"hint_string": "0,4,or_greater"
 	},
 	{
+		# Ticks before the current one that input is accepted for, -1 for the
+		# history limit
+		"name": "netfox/rollback/input_max_late_ticks",
+		"value": -1,
+		"type": TYPE_INT,
+		"hint": PROPERTY_HINT_RANGE,
+		"hint_string": "-1,64,or_greater"
+	},
+	{
+		# Ticks after the current one and the input delay that input and state
+		# are accepted for, -1 for no limit
+		"name": "netfox/rollback/input_max_early_ticks",
+		"value": 4,
+		"type": TYPE_INT,
+		"hint": PROPERTY_HINT_RANGE,
+		"hint_string": "-1,16,or_greater"
+	},
+	{
 		"name": "netfox/rollback/enable_input_broadcast",
 		"value": false,
 		"type": TYPE_BOOL

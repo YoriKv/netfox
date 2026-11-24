@@ -14,6 +14,12 @@ func before_case(__):
 
 func after_case(__):
 	servers.queue_free()
+	NetworkSynchronizationServer._input_max_late = -1
+	NetworkSynchronizationServer._input_max_early = 4
+	NetworkTimeSynchronizer._clock.offset = 0.
+	NetworkMocks.set_tick(0, 0)
+	NetworkHistoryServer.reset()
+	NetworkRollback.reset()
 
 func suite() -> void:
 	define("synchronize_input()", func():
@@ -376,6 +382,149 @@ func suite() -> void:
 		)
 	)
 
+	define("input acceptance", func():
+		test("should refuse input too far ahead, keeping the input of others", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(100)
+			var own := await get_node("own")
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(own, ^"position")
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+			for tick in range(90, 101):
+				NetworkHistoryServer._record_rollback_input(tick)
+			var refusals := record_refusals()
+			var refused_before := NetworkPerformance.get_inputs_refused_by(2)
+
+			sync_server._ingest_input(2, _Snapshot.of(1100, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_equal(refusals, [[2, 1100]])
+			expect_equal(NetworkPerformance.get_inputs_refused_by(2) - refused_before, 1)
+			expect(NetworkHistoryServer._get_rollback_input_snapshot(99).has_subject(own, true), "Input of others should be kept!")
+			expect_empty(NetworkHistoryServer.get_rollback_input_at(remote, 1100))
+
+			sync_server.on_input_refused.disconnect(_refusal_handler)
+			cleanup_global([own, remote])
+		)
+
+		test("should accept input up to the early bound and input delay", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(100)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+			var latest := 100 + NetworkRollback.input_delay + sync_server._input_max_early
+
+			sync_server._ingest_input(2, _Snapshot.of(latest, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_equal(sync_server.get_latest_input_tick(), latest)
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(remote, latest), { ^"position": Vector3.ONE })
+			cleanup_global([remote])
+		)
+
+		test("should measure early input from the reference clock while behind it", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(130)
+			NetworkMocks.set_network_tick(100)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+
+			sync_server._ingest_input(2, _Snapshot.of(131, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(remote, 131), { ^"position": Vector3.ONE })
+			cleanup_global([remote])
+		)
+
+		test("should refuse a state too far ahead", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(100)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_state(remote, ^"position")
+			for tick in range(90, 101):
+				NetworkHistoryServer._record_rollback_state(tick)
+
+			sync_server._ingest_state(2, _Snapshot.of(1100, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_not_null(NetworkHistoryServer._get_rollback_state_snapshot(99))
+			expect_equal(NetworkHistoryServer.get_latest_state_tick_for([remote], 99), 99)
+			expect_equal(sync_server.get_latest_received_state_tick_for(remote), -1)
+			cleanup_global([remote])
+		)
+
+		test("should refuse input later than the window, without resimulating", func():
+			var sync_server := NetworkSynchronizationServer
+			sync_server._input_max_late = 15
+			set_clock_tick(100)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+			var refusals := record_refusals()
+
+			sync_server._ingest_input(2, _Snapshot.of(84, [[remote, ^"position", Vector3.ONE]], [remote]))
+			sync_server._ingest_input(2, _Snapshot.of(85, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_equal(refusals, [[2, 84]])
+			expect_empty(NetworkHistoryServer.get_rollback_input_at(remote, 84))
+			expect_equal(NetworkRollback._earliest_input, 85)
+
+			sync_server.on_input_refused.disconnect(_refusal_handler)
+			cleanup_global([remote])
+		)
+
+		test("should drop late copies of known input quietly", func():
+			var sync_server := NetworkSynchronizationServer
+			sync_server._input_max_late = 15
+			set_clock_tick(80)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+			sync_server._ingest_input(2, _Snapshot.of(80, [[remote, ^"position", Vector3.ONE]], [remote]))
+			var refusals := record_refusals()
+
+			set_clock_tick(100)
+			sync_server._ingest_input(2, _Snapshot.of(80, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_empty(refusals)
+
+			sync_server.on_input_refused.disconnect(_refusal_handler)
+			cleanup_global([remote])
+		)
+
+		test("should accept input as late as the history by default", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(100)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+
+			sync_server._ingest_input(2, _Snapshot.of(NetworkRollback.history_start, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_equal(sync_server.get_earliest_input_tick(), 100 - NetworkRollback.history_limit)
+			expect_equal(NetworkHistoryServer.get_rollback_input_at(remote, NetworkRollback.history_start), { ^"position": Vector3.ONE })
+			cleanup_global([remote])
+		)
+
+		test("should leave input from before a stall to the history", func():
+			var sync_server := NetworkSynchronizationServer
+			set_clock_tick(120)
+			NetworkRollback._handle_tick_jump(120)
+			var remote := await get_node("remote")
+			remote.set_multiplayer_authority(2)
+			NetworkHistoryServer.register_rollback_input(remote, ^"position")
+			var refusals := record_refusals()
+
+			sync_server._ingest_input(2, _Snapshot.of(110, [[remote, ^"position", Vector3.ONE]], [remote]))
+
+			expect_empty(refusals)
+			expect_empty(NetworkHistoryServer.get_rollback_input_at(remote, 110))
+
+			sync_server.on_input_refused.disconnect(_refusal_handler)
+			cleanup_global([remote])
+		)
+	)
+
 	define("synchronize_sync_state()", func():
 		test("should submit owned", func():
 			skip()
@@ -458,6 +607,25 @@ func suite() -> void:
 			cleanup(sync_server, [node])
 		)
 	)
+
+var _refusal_handler: Callable
+
+# Each input refusal as [peer, tick], until disconnected
+func record_refusals() -> Array:
+	var result := []
+	_refusal_handler = func(peer: int, tick: int): result.append([peer, tick])
+	NetworkSynchronizationServer.on_input_refused.connect(_refusal_handler)
+	return result
+
+# Set both the network tick and the reference clock to [param tick]
+func set_clock_tick(tick: int) -> void:
+	NetworkMocks.set_network_tick(tick)
+	NetworkTimeSynchronizer._clock.set_time((tick + 0.5) * NetworkTime.ticktime)
+
+func cleanup_global(nodes: Array) -> void:
+	for node in nodes:
+		NetworkHistoryServer.deregister(node)
+		node.queue_free()
 
 func get_peered_server(peers: Array) -> PeeredSynchronizationServer:
 	var sync_server := PeeredSynchronizationServer.new(servers.command_server(), servers.history_server(), servers.identity_server(), servers.simulation_server())

@@ -23,6 +23,7 @@ const INPUT_LATENESS_MAX_MONITOR: StringName = &"netfox/Input lateness max (tick
 const SENT_STATE_BYTES_MONITOR: StringName = &"netfox/Sent rollback state bytes"
 const SENT_INPUT_BYTES_MONITOR: StringName = &"netfox/Sent input bytes"
 const SENT_SYNC_STATE_BYTES_MONITOR: StringName = &"netfox/Sent sync state bytes"
+const INPUTS_REFUSED_MONITOR: StringName = &"netfox/Inputs refused"
 
 var _network_loop_start: float = 0
 var _network_loop_duration: float = 0
@@ -62,6 +63,11 @@ var _input_lateness_window_end: int = -1
 # Bytes handed to NetworkCommandServer, per command kind
 var _sent_bytes := {} # command kind to bytes sent in the last tick loop
 var _sent_bytes_totals := {} # command kind to total bytes at the last tick loop
+
+var _inputs_refused: int = 0
+var _inputs_refused_accum: int = 0
+var _inputs_refused_by_peer := {} # peer to total inputs refused
+var _states_refused_total: int = 0
 
 # Whether monitoring is enabled, cached
 var _enabled: bool = false
@@ -232,6 +238,27 @@ func push_input_lateness(peer: int, ticks: int) -> void:
 	entry[1] += 1
 	entry[2] = maxi(entry[2], ticks)
 
+## Get the number of input ticks refused during the last tick loop, from any
+## peer. See [signal _NetworkSynchronizationServer.on_input_refused].
+func get_inputs_refused() -> int:
+	return _inputs_refused
+
+## Get the number of input ticks refused from [param peer] since monitoring
+## started.
+func get_inputs_refused_by(peer: int) -> int:
+	return _inputs_refused_by_peer.get(peer, 0)
+
+## Get the number of states refused as too early since monitoring started.
+func get_states_refused_total() -> int:
+	return _states_refused_total
+
+func push_input_refused(peer: int) -> void:
+	_inputs_refused_accum += 1
+	_inputs_refused_by_peer[peer] = _inputs_refused_by_peer.get(peer, 0) + 1
+
+func push_state_refused() -> void:
+	_states_refused_total += 1
+
 ## Get the bytes of rollback state handed to [_NetworkCommandServer] during the
 ## last tick loop, full and diff states together.
 func get_sent_state_bytes() -> int:
@@ -274,6 +301,7 @@ func _ready() -> void:
 	Performance.add_custom_monitor(SENT_STATE_BYTES_MONITOR, get_sent_state_bytes)
 	Performance.add_custom_monitor(SENT_INPUT_BYTES_MONITOR, get_sent_input_bytes)
 	Performance.add_custom_monitor(SENT_SYNC_STATE_BYTES_MONITOR, get_sent_sync_state_bytes)
+	Performance.add_custom_monitor(INPUTS_REFUSED_MONITOR, get_inputs_refused)
 
 	NetworkTime.before_tick_loop.connect(_before_tick_loop)
 	NetworkTime.on_tick.connect(_on_network_tick)
@@ -302,6 +330,9 @@ func _after_tick_loop() -> void:
 
 	_corrections = _corrections_accum
 	_corrections_accum = 0
+
+	_inputs_refused = _inputs_refused_accum
+	_inputs_refused_accum = 0
 
 	if NetworkTime.tick >= _input_lateness_window_end:
 		_input_lateness = _input_lateness_accum

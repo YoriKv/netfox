@@ -196,6 +196,24 @@ the network latency is smaller than the input latency.
 
     This happens when network latency is smaller than the input delay.
 
+*Input max late ticks* is how many ticks before the current one input is
+still accepted for. Older input is refused: it is not recorded and starts no
+resimulation, so a slow or misbehaving client cannot make every loop rewind
+far. Set it from the lateness the worst supported connection shows, see the
+*Input lateness* monitors in [NetworkPerformance]. Defaults to -1, which accepts
+input as old as the *History limit*.
+
+*Input max early ticks* is how many ticks after the current one, plus the
+*Input delay*, input is accepted for. The current tick is taken from the
+reference clock when the tick loop lags behind it, e.g. while catching up after
+a hitch. Input further ahead is refused, and so are states received further
+ahead: such a tick would push the earlier ticks out of the history. Set to -1 to
+accept any tick.
+
+A refused input emits `NetworkSynchronizationServer.on_input_refused(peer,
+tick)` and is counted per peer by [NetworkPerformance]. Late copies of input
+already received, e.g. from input redundancy, are dropped without a refusal.
+
 *Debug resimulate ticks* makes every rollback loop resimulate at least this
 many ticks, even when no new input or state arrived. A side effect that is not
 safe to replay - a sound, a spawn, a counter outside of state - then happens
@@ -209,3 +227,4 @@ between peers. See [RollbackSynchronizer] on how this is done and configured.
 [Client-Side Prediction and Server Reconciliation]: https://www.gabrielgambetta.com/client-side-prediction-server-reconciliation.html
 [input prediction]: ../tutorials/predicting-input.md
 [RollbackSynchronizer]: ../nodes/rollback-synchronizer.md
+[NetworkPerformance]: ./network-performance.md
