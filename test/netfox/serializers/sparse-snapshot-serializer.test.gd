@@ -74,3 +74,49 @@ func suite() -> void:
 		expect_equal(packets.size(), 1)
 		expect_equal(deserialized, expected)
 	)
+
+	test("should read on past unknown identifiers", func():
+		var schema := _NetworkSchema.new()
+		var writer_identity_server := _NetworkIdentityServer.new(TestingCommandServer.new())
+		var reader_identity_server := _NetworkIdentityServer.new(TestingCommandServer.new())
+
+		Vest.get_tree().root.add_child.call_deferred(writer_identity_server)
+		Vest.get_tree().root.add_child.call_deferred(reader_identity_server)
+		await writer_identity_server.ready; await reader_identity_server.ready
+
+		var writer_serializer := _SparseSnapshotSerializer.new(schema, writer_identity_server)
+		var reader_serializer := _SparseSnapshotSerializer.new(schema, reader_identity_server)
+
+		var known_subject := await get_subject()
+		var unknown_subject := await get_subject()
+
+		# The unknown subject is written first
+		var writer_props := _PropertyPool.of([[unknown_subject, "position"], [known_subject, "position"]])
+		var reader_props := _PropertyPool.of([[known_subject, "position"]])
+
+		writer_identity_server.register_node(known_subject)
+		writer_identity_server.register_node(unknown_subject)
+
+		reader_identity_server.register_node(known_subject)
+
+		var snapshot := _Snapshot.of(0, [
+			[unknown_subject, "position", Vector3.ONE],
+			[known_subject, "position", Vector3.UP]
+		], [known_subject, unknown_subject])
+
+		var expected := _Snapshot.of(0, [
+			[known_subject, "position", Vector3.UP]
+		], [known_subject])
+
+		var packets := writer_serializer.write_for(1, snapshot, writer_props)
+		var deserialized := reader_serializer.read_from(1, reader_props, to_buffer(packets[0]))
+
+		expect_equal(packets.size(), 1)
+		expect_equal(deserialized, expected)
+
+		for identity_server in [writer_identity_server, reader_identity_server]:
+			identity_server._command_server.free()
+			identity_server.queue_free()
+		known_subject.queue_free()
+		unknown_subject.queue_free()
+	)

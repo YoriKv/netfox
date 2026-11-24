@@ -80,7 +80,7 @@ func read_from(peer: int, properties: _PropertyPool, buffer: StreamPeerBuffer, i
 				_logger.debug("Received reference to deregistered identity %s, skipping data", [idref])
 			else:
 				_logger.warning("Received unknown identity reference %s, skipping data", [idref])
-			break
+			continue
 		var node := identifier.get_subject() as Node
 
 		# Read changed properties
