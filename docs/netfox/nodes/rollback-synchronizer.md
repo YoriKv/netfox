@@ -20,6 +20,16 @@ will most often be the *RollbackSynchronizer*'s parent node.
 state, the server is the ultimate authority. Make sure that nodes containing
 state properties are owned by the server.
 
+*Owner state properties* are state properties too, but they are sent only to
+the peers that own one of the node's inputs. Use them for state that only the
+input owner's prediction needs, such as energy, cooldowns or ammo, while other
+peers merely display the node - they are not sent at all to those peers, saving
+bandwidth. A peer that does not own the input keeps its own records of these
+properties: the values it had when it recorded each tick, never the server's.
+Nothing on such a peer should read them. A peer that becomes the owner later
+receives them with the next state. Nodes may also list them by implementing
+`_get_rollback_owner_state_properties()`.
+
 *Full state interval* specifies how many ticks to wait between full states. If
 diff states are enabled, full states are only sent at specific intervals, to
 make sure that peers always have the correct state data. *Only considered if

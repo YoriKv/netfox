@@ -27,6 +27,7 @@ var _rb_input_properties := _PropertyPool.new()
 var _rb_state_properties := _PropertyPool.new()
 var _rb_owned_input_properties := _PropertyPool.new()
 var _rb_owned_state_properties := _PropertyPool.new()
+var _rb_owner_only_state_properties := _PropertyPool.new()
 var _sync_state_properties := _PropertyPool.new()
 var _sync_owned_state_properties := _PropertyPool.new()
 
@@ -83,16 +84,22 @@ signal on_input_refused(peer: int, tick: int)
 
 ## Register a [param property] of [param node] to be synchronized
 ## as rollback state
-func register_rollback_state(node: Node, property: NodePath) -> void:
+## [br][br]
+## With [param owner_only], the property is sent only to the peers owning an
+## input of [param node]. Other peers keep their own records of it.
+func register_rollback_state(node: Node, property: NodePath, owner_only: bool = false) -> void:
 	_rb_state_properties.add(node, property)
 	if node.is_multiplayer_authority():
 		_rb_owned_state_properties.add(node, property)
+	if owner_only:
+		_rb_owner_only_state_properties.add(node, property)
 
 ## Deregister a [param property] of [param node] from being
 ## synchronized as rollback state
 func deregister_rollback_state(node: Node, property: NodePath) -> void:
 	_rb_state_properties.erase(node, property)
 	_rb_owned_state_properties.erase(node, property)
+	_rb_owner_only_state_properties.erase(node, property)
 
 ## Register a [param property] of [param node] to be synchronized
 ## as rollback input
@@ -149,6 +156,7 @@ func deregister(node: Node) -> void:
 	_rb_input_properties.erase_subject(node)
 	_rb_owned_state_properties.erase_subject(node)
 	_rb_owned_input_properties.erase_subject(node)
+	_rb_owner_only_state_properties.erase_subject(node)
 	_sync_state_properties.erase_subject(node)
 	_sync_owned_state_properties.erase_subject(node)
 	_visibility_filters.erase(node)
@@ -238,9 +246,11 @@ func _merge_sent_rollback_state(reference: _Snapshot, snapshot: _Snapshot) -> _S
 	return remembered
 
 # Prepare snapshot to be sent to `peer`
-# Only contains visible subjects' auth properties
+# Only contains visible subjects' auth properties, and owner-only properties of
+# the subjects whose input `peer` owns
 func _make_peer_snapshot(snapshot: _Snapshot, peer: int, properties: _PropertyPool) -> _Snapshot:
-	return _make_subjects_snapshot(snapshot, _get_visible_auth_subjects(snapshot, peer, properties), properties)
+	var subjects := _get_visible_auth_subjects(snapshot, peer, properties)
+	return _make_subjects_snapshot(snapshot, subjects, properties, _get_input_owned_subjects(subjects, peer))
 
 func _get_visible_auth_subjects(snapshot: _Snapshot, peer: int, properties: _PropertyPool) -> Array:
 	var result := []
@@ -249,12 +259,16 @@ func _get_visible_auth_subjects(snapshot: _Snapshot, peer: int, properties: _Pro
 			result.append(subject)
 	return result
 
-func _make_subjects_snapshot(snapshot: _Snapshot, subjects: Array, properties: _PropertyPool) -> _Snapshot:
+# Owner-only properties are included only for `owned_subjects`
+func _make_subjects_snapshot(snapshot: _Snapshot, subjects: Array, properties: _PropertyPool, owned_subjects: Array = []) -> _Snapshot:
 	var result := _Snapshot.new(snapshot.tick)
 	for subject in subjects:
 		var has_property := false
+		var is_owned := owned_subjects.has(subject)
 		for property in properties.get_properties_of_raw(subject):
 			if not snapshot.has_property(subject, property):
+				continue
+			if not is_owned and _rb_owner_only_state_properties.has(subject, property):
 				continue
 			result.set_property(subject, property, snapshot.get_property(subject, property))
 			has_property = true
@@ -271,6 +285,30 @@ func _is_same_sent_state(snapshot: _Snapshot, other: _Snapshot) -> bool:
 	if snapshot == null or other == null:
 		return false
 	return snapshot._data == other._data and snapshot._auth_subjects._data == other._auth_subjects._data
+
+# Return the subjects with owner-only properties whose input [param peer] owns
+func _get_input_owned_subjects(subjects: Array, peer: int) -> Array:
+	var result := []
+	if _rb_owner_only_state_properties.is_empty():
+		return result
+	for subject in subjects:
+		if _rb_owner_only_state_properties.has_subject(subject) and _is_input_owner(subject, peer):
+			result.append(subject)
+	return result
+
+func _is_input_owner(subject: Object, peer: int) -> bool:
+	for input in _simulation_server._get_inputs_of(subject):
+		if input.get_multiplayer_authority() == peer:
+			return true
+	return false
+
+# Return a filter for the properties of a full state sent to or received by
+# [param peer]: owner-only properties only for the subjects it owns input of
+func _get_state_property_filter(peer: int) -> Callable:
+	if _rb_owner_only_state_properties.is_empty():
+		return _BaseSnapshotSerializer._default_property_filter
+	return func(subject: Object, property: NodePath) -> bool:
+		return not _rb_owner_only_state_properties.has(subject, property) or _is_input_owner(subject, peer)
 
 func _has_owned_auth_subject(snapshot: _Snapshot) -> bool:
 	for subject in snapshot.get_auth_subjects():
@@ -353,19 +391,22 @@ func _synchronize_state(tick: int) -> void:
 	if not _has_owned_auth_subject(snapshot):
 		return
 
-	# Peers that see the same subjects and were sent the same states before get
-	# the same state, so it is prepared once for each such group
-	var peer_snapshots := {} # visible subjects to peer snapshot
+	# Peers that see the same subjects, own input of the same ones and were sent
+	# the same states before get the same state, so it is prepared once for each
+	# such group
+	var peer_snapshots := {} # [visible subjects, input owned subjects] to peer snapshot
 	var prepared := {} # [peer snapshot, is full] to [[reference, sent, remembered, frames]]
 	for peer in _get_peers():
 		var visible_subjects := _get_visible_auth_subjects(snapshot, peer, _rb_owned_state_properties)
 		if visible_subjects.is_empty():
 			continue
 
-		var peer_snapshot := peer_snapshots.get(visible_subjects) as _Snapshot
+		var owned_subjects := _get_input_owned_subjects(visible_subjects, peer)
+		var subjects_key := [visible_subjects, owned_subjects]
+		var peer_snapshot := peer_snapshots.get(subjects_key) as _Snapshot
 		if peer_snapshot == null:
-			peer_snapshot = _make_subjects_snapshot(snapshot, visible_subjects, _rb_owned_state_properties)
-			peer_snapshots[visible_subjects] = peer_snapshot
+			peer_snapshot = _make_subjects_snapshot(snapshot, visible_subjects, _rb_owned_state_properties, owned_subjects)
+			peer_snapshots[subjects_key] = peer_snapshot
 		if peer_snapshot.is_empty():
 			continue
 
@@ -395,7 +436,7 @@ func _synchronize_state(tick: int) -> void:
 			continue
 
 		if peer_is_full:
-			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[3])
+			var packets := _dense_serializer.write_for(peer, sent, _rb_owned_state_properties, _BaseSnapshotSerializer._default_filter, state[3], _get_state_property_filter(peer))
 			for packet in packets:
 				_cmd_full_state.send(packet, peer)
 		else:
@@ -533,7 +574,7 @@ func _handle_full_state(sender: int, data: PackedByteArray) -> void:
 	var buffer := StreamPeerBuffer.new()
 	buffer.data_array = data
 
-	var snapshot := _dense_serializer.read_from(sender, _rb_state_properties, buffer, true)
+	var snapshot := _dense_serializer.read_from(sender, _rb_state_properties, buffer, true, _get_state_property_filter(multiplayer.get_unique_id()))
 
 	_ingest_state(sender, snapshot)
 

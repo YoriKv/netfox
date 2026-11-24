@@ -162,6 +162,22 @@ func suite() -> void:
 		)
 	)
 
+	define("partial states", func():
+		test("should keep its own record of a property not received", func():
+			var node := await get_node()
+			var history_server := servers.history_server()
+			history_server._rb_state_history.set_property(4, node, ^"position", Vector3.ZERO)
+			history_server._rb_state_history.set_property(4, node, ^"scale", Vector3.ONE * 3)
+
+			history_server._merge_rollback_state(_Snapshot.of(4, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_equal(history_server.get_rollback_state_at(node, 4), {
+				^"position": Vector3.UP, ^"scale": Vector3.ONE * 3
+			})
+			node.queue_free()
+		)
+	)
+
 	define("push_rollback_state()", func():
 		test("should create a snapshot at spawn tick", func():
 			subject.tracked_value = 42

@@ -185,6 +185,115 @@ func suite() -> void:
 		)
 	)
 
+	define("owner-only state", func():
+		test("should send owner-only properties to the input owner only", func():
+			var sync_server := await get_peered_server([2, 3])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(0)
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			input.set_multiplayer_authority(2)
+			servers.simulation_server().register_rollback_input_for(node, input)
+			register_owner_state(sync_server, node)
+
+			set_owner_states(1, node, Vector3.ZERO, Vector3.ONE)
+			set_owner_states(2, node, Vector3.UP, Vector3.ONE * 2)
+			sync_server._synchronize_state(1)
+			sync_server._synchronize_state(2)
+
+			expect_equal(sent_owner_states(sync_server, 2, node), [
+				[1, true, { ^"position": Vector3.ZERO, ^"scale": Vector3.ONE }],
+				[2, false, { ^"position": Vector3.UP, ^"scale": Vector3.ONE * 2 }]
+			])
+			expect_equal(sent_owner_states(sync_server, 3, node), [
+				[1, true, { ^"position": Vector3.ZERO }],
+				[2, false, { ^"position": Vector3.UP }]
+			])
+
+			servers.simulation_server().deregister_node(node)
+			input.queue_free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should send nothing to others when only owner-only properties change", func():
+			var sync_server := await get_peered_server([2, 3])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(0)
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			input.set_multiplayer_authority(2)
+			servers.simulation_server().register_rollback_input_for(node, input)
+			register_owner_state(sync_server, node)
+
+			set_owner_states(1, node, Vector3.ZERO, Vector3.ONE)
+			set_owner_states(2, node, Vector3.ZERO, Vector3.ONE * 2)
+			sync_server._synchronize_state(1)
+			sync_server._synchronize_state(2)
+
+			expect_equal(sent_state_ticks(sync_server, 2), [[1, true], [2, false]])
+			expect_equal(sent_state_ticks(sync_server, 3), [[1, true]])
+
+			servers.simulation_server().deregister_node(node)
+			input.queue_free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should send owner-only properties to a new input owner", func():
+			var sync_server := await get_peered_server([2, 3])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(0)
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			input.set_multiplayer_authority(2)
+			servers.simulation_server().register_rollback_input_for(node, input)
+			register_owner_state(sync_server, node)
+
+			set_owner_states(1, node, Vector3.ZERO, Vector3.ONE)
+			set_owner_states(2, node, Vector3.ZERO, Vector3.ONE)
+			sync_server._synchronize_state(1)
+			input.set_multiplayer_authority(3)
+			sync_server._synchronize_state(2)
+
+			expect_equal(sent_owner_states(sync_server, 3, node), [
+				[1, true, { ^"position": Vector3.ZERO }],
+				[2, false, { ^"scale": Vector3.ONE }]
+			])
+
+			servers.simulation_server().deregister_node(node)
+			input.queue_free()
+			cleanup(sync_server, [node])
+		)
+
+		test("should read a full state without the owner-only properties of others' nodes", func():
+			var node := await get_node("subject")
+			var input := await get_node("input")
+			node.set_multiplayer_authority(2)
+			input.set_multiplayer_authority(3)
+			RollbackSimulationServer.register_rollback_input_for(node, input)
+			var sync_server := servers.synchronization_server()
+			servers.identity_server().register_node(node)
+			sync_server.register_rollback_state(node, ^"position")
+			sync_server.register_rollback_state(node, ^"scale", true)
+
+			var properties := _PropertyPool.of([[node, ^"position"]])
+			var dense := _DenseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+			var buffer := StreamPeerBuffer.new()
+			buffer.put_u32(7)
+			NetworkSchemas._netref().encode(servers.identity_server()._get_identifier_of(node).reference_for(1), buffer)
+			var values := StreamPeerBuffer.new()
+			_NetworkSchema.new().encode(node, ^"position", Vector3.UP, values)
+			NetworkSchemas.varuint().encode(values.get_size(), buffer)
+			buffer.put_data(values.data_array)
+			buffer.seek(0)
+
+			var snapshot := dense.read_from(2, sync_server._rb_state_properties, buffer, true, sync_server._get_state_property_filter(1))
+
+			expect_equal(snapshot._data, { node: { ^"position": Vector3.UP } })
+
+			RollbackSimulationServer.deregister_node(node)
+			input.queue_free()
+			sync_server.deregister(node)
+			node.queue_free()
+		)
+	)
+
 	define("_make_peer_snapshot()", func():
 		test("should include only visible owned auth state for target peer", func():
 			var visible_node := await get_node("visible")
@@ -662,6 +771,40 @@ func set_rollback_states(tick: int, values: Array, auth_subjects: Array[Object])
 	for value in values:
 		entries.append([value[0], ^"position", value[1]])
 	servers.history_server()._rb_state_snapshots.set_at(tick, _Snapshot.of(tick, entries, auth_subjects))
+
+func register_owner_state(sync_server: _NetworkSynchronizationServer, node: Node) -> void:
+	servers.identity_server().register_node(node)
+	sync_server.register_rollback_state(node, ^"position")
+	sync_server.register_rollback_state(node, ^"scale", true)
+
+func set_owner_states(tick: int, node: Node, position: Vector3, scale: Vector3) -> void:
+	servers.history_server()._rb_state_snapshots.set_at(tick, _Snapshot.of(tick, [
+		[node, ^"position", position], [node, ^"scale", scale]
+	], [node]))
+
+# Each rollback state sent to [param peer] as [tick, is full, values], read as
+# [param peer] reads them
+func sent_owner_states(sync_server: _NetworkSynchronizationServer, peer: int, node: Node) -> Array:
+	var properties := _PropertyPool.of([[node, ^"position"], [node, ^"scale"]])
+	var dense := _DenseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+	var sparse := _SparseSnapshotSerializer.new(_NetworkSchema.new(), servers.identity_server())
+
+	var result := []
+	for command in servers.command_server().commands_sent:
+		if command[2] != peer:
+			continue
+		var is_full: bool = command[0] == sync_server._cmd_full_state._idx
+		if not is_full and command[0] != sync_server._cmd_diff_state._idx:
+			continue
+		var buffer := StreamPeerBuffer.new()
+		buffer.data_array = command[1]
+		var snapshot: _Snapshot
+		if is_full:
+			snapshot = dense.read_from(1, properties, buffer, true, sync_server._get_state_property_filter(peer))
+		else:
+			snapshot = sparse.read_from(1, properties, buffer)
+		result.append([snapshot.tick, is_full, snapshot._data.get(node, {})])
+	return result
 
 # Each rollback state sent to [param peer] as [tick, is full, decoded snapshot]
 func sent_states(sync_server: _NetworkSynchronizationServer, peer: int, nodes: Array) -> Array:

@@ -258,6 +258,26 @@ func suite():
 		test("should return latest", func(): todo())
 	)
 
+	define("owner_state_properties", func():
+		test("should register as state sent to input owners only", func():
+			make_spawn_synchronizer(0, 0)
+			spawn_rbs.owner_state_properties = [":owner_value"]
+			Vest.get_tree().root.add_child.call_deferred(spawn_root)
+			await spawn_root.ready
+
+			spawn_rbs.process_settings()
+
+			expect(NetworkHistoryServer._rb_state_properties.has(spawn_root, ^"owner_value"))
+			expect(NetworkSynchronizationServer._rb_state_properties.has(spawn_root, ^"owner_value"))
+			expect(NetworkSynchronizationServer._rb_owner_only_state_properties.has(spawn_root, ^"owner_value"))
+			expect_not(NetworkSynchronizationServer._rb_owner_only_state_properties.has(spawn_root, ^"tracked_value"))
+
+			spawn_root.remove_child(spawn_rbs)
+			expect_not(NetworkSynchronizationServer._rb_owner_only_state_properties.has_subject(spawn_root))
+			spawn_rbs.free()
+		)
+	)
+
 	define("get_last_known_state()", func():
 		test("should return -1 for no state", func(): todo())
 		test("should return latest", func(): todo())
@@ -307,6 +327,7 @@ class RecordingLogger extends NetfoxLogger:
 
 class SpawnAwareRollbackNode extends Node:
 	var tracked_value := 0
+	var owner_value := 0
 
 	func _rollback_tick(_dt: float, _t: int, _if: int) -> void:
 		pass

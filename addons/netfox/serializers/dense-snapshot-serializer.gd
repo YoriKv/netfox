@@ -6,7 +6,9 @@ static func _static_init() -> void:
 
 # Pass the same [param frames] to write the same snapshot for several peers:
 # each subject's data is encoded once, and only its reference per peer
-func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}) -> Array[PackedByteArray]:
+# The [param property_filter] leaves properties out; the reader must leave out
+# the same ones
+func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}, property_filter: Callable = _default_property_filter) -> Array[PackedByteArray]:
 	var packet_buffer := _PacketBuffer.new(max_packet_size)
 	var frame_buffer := StreamPeerBuffer.new()
 	var node_buffer := StreamPeerBuffer.new()
@@ -40,6 +42,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 			# Write properties as-is
 			# First into a buffer, so we can start with the state size
 			for property in properties.get_properties_of_raw(node):
+				if not property_filter.call(node, property): continue
 				assert(snapshot.has_property(node, property), "Trying to serialize missing property %s on subject %s!" % [property, node])
 
 				var value := snapshot.get_property(node, property)
@@ -60,7 +63,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 
 	return packet_buffer.finish()
 
-func read_from(peer: int, properties: _PropertyPool, buffer: StreamPeerBuffer, is_auth: bool = true) -> _Snapshot:
+func read_from(peer: int, properties: _PropertyPool, buffer: StreamPeerBuffer, is_auth: bool = true, property_filter: Callable = _default_property_filter) -> _Snapshot:
 	var netref := NetworkSchemas._netref()
 	var varuint := NetworkSchemas.varuint()
 	var node_buffer := StreamPeerBuffer.new()
@@ -89,6 +92,7 @@ func read_from(peer: int, properties: _PropertyPool, buffer: StreamPeerBuffer, i
 
 		# Read properties
 		for property in properties.get_properties_of(node):
+			if not property_filter.call(node, property): continue
 			if node_buffer.get_available_bytes() == 0: break
 
 			var value := _read_property(node, property, node_buffer)

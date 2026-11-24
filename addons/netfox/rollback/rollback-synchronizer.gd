@@ -29,6 +29,14 @@ class_name RollbackSynchronizer
 ## the tick.
 @export var state_properties: Array[String]
 
+## State properties sent only to the peers that own one of the inputs.
+## [br][br]
+## These are state properties too, recorded and restored as the others. Use it
+## for state that only the input owner's prediction needs, e.g. cooldowns or
+## energy, while other peers only display the node. Other peers never receive
+## these, and keep their own records of them instead.
+@export var owner_state_properties: Array[String]
+
 ## Ticks to wait between sending full states.
 ## [br][br]
 ## If set to 0, full states will never be sent. If set to 1, only full states
@@ -70,6 +78,7 @@ var visibility_filter := PeerVisibilityFilter.new()
 var spawn_tick = -1
 
 var _state_properties := _PropertyPool.new()
+var _owner_state_properties := _PropertyPool.new()
 var _input_properties := _PropertyPool.new()
 var _sim_nodes := [] as Array[Node]
 var _liveness_nodes := [] as Array[Node]
@@ -149,14 +158,17 @@ func process_authority() -> void:
 			NetworkSynchronizationServer.deregister_rollback_input(node, property)
 
 	# Process authority
-	_state_properties.set_from_paths(root, state_properties)
+	var all_state_properties := state_properties.duplicate()
+	all_state_properties.append_array(owner_state_properties)
+	_state_properties.set_from_paths(root, all_state_properties)
+	_owner_state_properties.set_from_paths(root, owner_state_properties)
 	_input_properties.set_from_paths(root, input_properties)
 
 	# Register new recorded properties
 	for node in _state_properties.get_subjects():
 		for property in _state_properties.get_properties_of(node):
 			NetworkHistoryServer.register_rollback_state(node, property)
-			NetworkSynchronizationServer.register_rollback_state(node, property)
+			NetworkSynchronizationServer.register_rollback_state(node, property, _owner_state_properties.has(node, property))
 		NetworkHistoryServer.push_rollback_state(node, spawn_tick)
 
 	for node in _input_properties.get_subjects():
@@ -175,6 +187,18 @@ func add_state(node: Variant, property: String) -> void:
 		return
 
 	state_properties.push_back(property_path)
+	_properties_dirty = true
+	_reprocess_settings.call_deferred()
+
+## Add a state property sent only to the peers owning an input.
+## [br][br]
+## See [member owner_state_properties]. Works like [method add_state].
+func add_owner_state(node: Variant, property: String) -> void:
+	var property_path := PropertyEntry.make_path(root, node, property)
+	if not property_path or owner_state_properties.has(property_path):
+		return
+
+	owner_state_properties.push_back(property_path)
 	_properties_dirty = true
 	_reprocess_settings.call_deferred()
 
@@ -428,6 +452,11 @@ func _get_configuration_warnings() -> PackedStringArray:
 	result.append_array(_NetfoxEditorUtils.gather_properties(root, "_get_rollback_state_properties",
 		func(node, prop):
 			add_state(node, prop)
+	))
+
+	result.append_array(_NetfoxEditorUtils.gather_properties(root, "_get_rollback_owner_state_properties",
+		func(node, prop):
+			add_owner_state(node, prop)
 	))
 
 	result.append_array(_NetfoxEditorUtils.gather_properties(root, "_get_rollback_input_properties",
