@@ -40,6 +40,7 @@ var _rb_full_scheduler := _IntervalScheduler.new(_rb_full_interval)
 var _input_redundancy := NetworkRollback.input_redundancy
 
 var _rb_sent_state_history := {} # peer to _HistoryBuffer of _Snapshot
+var _rb_latest_received_state := {} # Node to tick
 
 var _last_sync_state_sent := _Snapshot.new(0)
 var _sync_enable_diffs := ProjectSettings.get_setting("netfox/state_synchronizer/enable_diff_states", true) as bool
@@ -140,6 +141,7 @@ func deregister(node: Node) -> void:
 	_sync_owned_state_properties.erase_subject(node)
 	_visibility_filters.erase(node)
 	_schemas.erase_subject(node)
+	_rb_latest_received_state.erase(node)
 
 	# NOTE: _rb_sent_state_history may contain snapshots with invalid subjects
 	# NOTE: Iterating all sent snapshots for `node` may be slow and useless
@@ -157,7 +159,17 @@ func erase_peer(peer: int) -> void:
 ## [method _NetworkTime.stop].
 func reset() -> void:
 	_rb_sent_state_history.clear()
+	_rb_latest_received_state.clear()
 	_last_sync_state_sent = _Snapshot.new(0)
+
+## Return the tick of the newest authoritative rollback state received for
+## [param subject], or -1 if none was received.
+## [br][br]
+## Updated by every state received, whether or not it changed the recorded
+## history. Useful for e.g. displaying remote nodes a few ticks behind their
+## newest state, as states may arrive in bursts.
+func get_latest_received_state_tick_for(subject: Node) -> int:
+	return _rb_latest_received_state.get(subject, -1)
 
 func _get_peer_rb_sent_history(peer: int) -> _HistoryBuffer:
 	if not _rb_sent_state_history.has(peer):
@@ -443,6 +455,10 @@ func _handle_diff_sync(sender: int, data: PackedByteArray) -> void:
 
 func _ingest_state(sender: int, snapshot: _Snapshot) -> void:
 	snapshot.sanitize(sender)
+
+	for subject in snapshot.get_subjects():
+		if snapshot.is_auth(subject) and snapshot.tick > _rb_latest_received_state.get(subject, -1):
+			_rb_latest_received_state[subject] = snapshot.tick
 
 	if NetworkHistoryServer._merge_rollback_state(snapshot):
 		_on_state.emit(snapshot)

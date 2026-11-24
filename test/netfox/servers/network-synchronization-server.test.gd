@@ -175,6 +175,57 @@ func suite() -> void:
 		)
 	)
 
+	define("get_latest_received_state_tick_for()", func():
+		test("should return -1 for unknown", func():
+			var node := await get_node()
+			expect_equal(servers.synchronization_server().get_latest_received_state_tick_for(node), -1)
+		)
+
+		test("should return newest received", func():
+			var node := await get_node()
+			node.set_multiplayer_authority(2)
+			var sync_server := servers.synchronization_server()
+
+			sync_server._ingest_state(2, _Snapshot.of(10, [[node, "position", Vector3.ONE]], [node]))
+			sync_server._ingest_state(2, _Snapshot.of(8, [[node, "position", Vector3.ONE]], [node]))
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), 10)
+
+			# Unchanged state still counts
+			sync_server._ingest_state(2, _Snapshot.of(12, [[node, "position", Vector3.ONE]], [node]))
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), 12)
+
+			NetworkHistoryServer.deregister(node)
+		)
+
+		test("should ignore non-auth and other senders", func():
+			var node := await get_node()
+			node.set_multiplayer_authority(2)
+			var sync_server := servers.synchronization_server()
+
+			sync_server._ingest_state(2, _Snapshot.of(10, [[node, "position", Vector3.ONE]], []))
+			sync_server._ingest_state(3, _Snapshot.of(11, [[node, "position", Vector3.ONE]], [node]))
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), -1)
+
+			NetworkHistoryServer.deregister(node)
+		)
+
+		test("should forget on deregister and reset", func():
+			var node := await get_node()
+			node.set_multiplayer_authority(2)
+			var sync_server := servers.synchronization_server()
+
+			sync_server._ingest_state(2, _Snapshot.of(10, [[node, "position", Vector3.ONE]], [node]))
+			sync_server.deregister(node)
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), -1)
+
+			sync_server._ingest_state(2, _Snapshot.of(10, [[node, "position", Vector3.ONE]], [node]))
+			sync_server.reset()
+			expect_equal(sync_server.get_latest_received_state_tick_for(node), -1)
+
+			NetworkHistoryServer.deregister(node)
+		)
+	)
+
 	define("synchronize_sync_state()", func():
 		test("should submit owned", func():
 			skip()
