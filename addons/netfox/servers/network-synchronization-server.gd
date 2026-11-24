@@ -243,6 +243,12 @@ func _make_peer_snapshot(snapshot: _Snapshot, peer: int, properties: _PropertyPo
 			result.set_auth(subject, true)
 	return result
 
+func _has_owned_auth_subject(snapshot: _Snapshot) -> bool:
+	for subject in snapshot.get_auth_subjects():
+		if _rb_owned_state_properties.has_subject(subject):
+			return true
+	return false
+
 func _is_node_visible_to(peer: int, node: Node) -> bool:
 	var filter := _visibility_filters.get(node) as PeerVisibilityFilter
 	if not filter:
@@ -299,7 +305,7 @@ func _synchronize_state(tick: int) -> void:
 		return
 
 	# Grab snapshot from NetworkHistoryServer
-	var snapshot := NetworkHistoryServer._get_rollback_state_snapshot(tick)
+	var snapshot := _history_server._get_rollback_state_snapshot(tick)
 	if not snapshot:
 		# No data for tick
 		return
@@ -313,7 +319,12 @@ func _synchronize_state(tick: int) -> void:
 	if not _rb_enable_diffs:
 		is_full = true
 
-	for peer in multiplayer.get_peers():
+	# No peer gets state of a tick where we have no auth state, e.g. while
+	# waiting for input
+	if not _has_owned_auth_subject(snapshot):
+		return
+
+	for peer in _get_peers():
 		var peer_snapshot := _make_peer_snapshot(snapshot, peer, _rb_owned_state_properties)
 		if peer_snapshot.is_empty():
 			continue

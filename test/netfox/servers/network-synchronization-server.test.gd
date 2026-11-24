@@ -41,6 +41,39 @@ func suite() -> void:
 			skip()
 		)
 
+		test("should send nothing for a tick without auth state", func():
+			var sync_server := await get_peered_server([2])
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			set_rollback_state(1, node, Vector3.ONE, true)
+			set_rollback_state(2, node, Vector3.UP, false)
+			sync_server._synchronize_state(1)
+			sync_server._synchronize_state(2)
+
+			expect_equal(sent_state_ticks(sync_server, 2), [[1, true]])
+
+			cleanup(sync_server, [node])
+		)
+
+		test("should keep full state interval over ticks without auth state", func():
+			var sync_server := await get_peered_server([2])
+			sync_server._rb_full_scheduler = _IntervalScheduler.new(2)
+			var node := await get_node("subject")
+			register_rollback_state(sync_server, node)
+
+			set_rollback_state(1, node, Vector3.ONE, true)
+			set_rollback_state(2, node, Vector3.UP, false)
+			set_rollback_state(3, node, Vector3.UP, true)
+			for tick in [1, 2, 3]:
+				sync_server._synchronize_state(tick)
+
+			# Tick 1 is full as the first sent, tick 2 takes the full slot
+			expect_equal(sent_state_ticks(sync_server, 2), [[1, true], [3, false]])
+
+			cleanup(sync_server, [node])
+		)
+
 		test("Includes newly authoritative subjects missing from the baseline", func() -> void:
 			var host: RefCounted = RefCounted.new()
 			var remote_player: RefCounted = RefCounted.new()
@@ -361,6 +394,28 @@ func sync_tick(sync_server: _NetworkSynchronizationServer, node: Node3D, tick: i
 		node.position = position
 	NetworkHistoryServer._record_sync_state(tick)
 	sync_server._synchronize_sync_state(tick)
+
+func register_rollback_state(sync_server: _NetworkSynchronizationServer, node: Node) -> void:
+	servers.identity_server().register_node(node)
+	sync_server.register_rollback_state(node, ^"position")
+
+func set_rollback_state(tick: int, node: Node, position: Vector3, is_auth: bool) -> void:
+	var auth_subjects: Array[Object] = []
+	if is_auth:
+		auth_subjects.append(node)
+	servers.history_server()._rb_state_snapshots.set_at(tick, _Snapshot.of(tick, [[node, ^"position", position]], auth_subjects))
+
+# Each rollback state sent to [param peer] as [tick, is full]
+func sent_state_ticks(sync_server: _NetworkSynchronizationServer, peer: int) -> Array:
+	var result := []
+	for command in servers.command_server().commands_sent:
+		if command[2] != peer:
+			continue
+		if command[0] == sync_server._cmd_full_state._idx or command[0] == sync_server._cmd_diff_state._idx:
+			var buffer := StreamPeerBuffer.new()
+			buffer.data_array = command[1]
+			result.append([buffer.get_u32(), command[0] == sync_server._cmd_full_state._idx])
+	return result
 
 func sent_diffs(sync_server: _NetworkSynchronizationServer, peer: int) -> Array[PackedByteArray]:
 	var result: Array[PackedByteArray] = []
