@@ -116,6 +116,37 @@ func suite():
 		)
 	)
 
+	define("schema", func():
+		test("should keep schema after leaving tree", func():
+			var setup := await create_spawn_synchronizer(0, 0)
+			var root := setup[0] as SpawnAwareRollbackNode
+			var rbs := setup[1] as RollbackSynchronizer
+			rbs.process_settings()
+			var serializer := NetworkSchemas.int32()
+			rbs.set_schema({ ":tracked_value": serializer })
+
+			var parent := root.get_parent()
+			parent.remove_child(root)
+			parent.add_child(root)
+			rbs.process_settings()
+
+			expect_equal(NetworkSynchronizationServer._schemas._get_serializer(root, ^"tracked_value"), serializer)
+		)
+
+		test("should forget cleared schema", func():
+			var setup := await create_spawn_synchronizer(0, 0)
+			var root := setup[0] as SpawnAwareRollbackNode
+			var rbs := setup[1] as RollbackSynchronizer
+			var serializer := NetworkSchemas.int32()
+			rbs.set_schema({ ":tracked_value": serializer })
+
+			rbs.clear_schema()
+			rbs.process_settings()
+
+			expect_not_equal(NetworkSynchronizationServer._schemas._get_serializer(root, ^"tracked_value"), serializer)
+		)
+	)
+
 	# Messy to set up, keeping cases for later
 	define("Input age and predicting", func():
 		test("should return -1 on no input", func(): todo())

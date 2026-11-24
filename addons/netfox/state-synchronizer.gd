@@ -35,6 +35,7 @@ var visibility_filter := PeerVisibilityFilter.new()
 
 var _properties_dirty: bool = false
 var _properties := _PropertyPool.new()
+var _schema := {} # property path to NetworkSchemaSerializer
 var _schema_nodes := _Set.new()
 
 var _is_initialized: bool = false
@@ -60,6 +61,9 @@ func process_settings() -> void:
 		for property in _properties.get_properties_of(node):
 			NetworkHistoryServer.register_sync_state(node, property)
 			NetworkSynchronizationServer.register_sync_state(node, property)
+
+	# Register schema, which is dropped with the nodes on leaving the tree
+	_register_schema(_schema)
 
 	_is_initialized = true
 
@@ -87,6 +91,9 @@ func add_state(node: Variant, property: String) -> void:
 ## [br][br]
 ## See [NetworkSchemas] for many common serializers.
 ## [br][br]
+## The schema is kept, and registered again whenever settings are processed,
+## e.g. after leaving the tree and entering it again.
+## [br][br]
 ## Example:
 ## [codeblock]
 ##    state_synchronizer.set_schema({
@@ -96,16 +103,10 @@ func add_state(node: Variant, property: String) -> void:
 ## [/codeblock]
 func set_schema(schema: Dictionary) -> void:
 	# Remove previous schema
-	for node in _schema_nodes:
-		NetworkSynchronizationServer.deregister_schema_for(node)
-	_schema_nodes.clear()
+	clear_schema()
 
 	# Register new schema
-	for prop in schema:
-		var prop_entry := PropertyEntry.parse(root, prop)
-		var serializer := schema[prop] as NetworkSchemaSerializer
-		NetworkSynchronizationServer.register_schema(prop_entry.node, prop_entry.property, serializer)
-		_schema_nodes.add(prop_entry.node)
+	merge_schema(schema)
 
 ## Add serializers from [param schema].
 ## [br][br]
@@ -113,11 +114,8 @@ func set_schema(schema: Dictionary) -> void:
 ## set_schema], this method updates the schema, instead of overriding it. If
 ## a property had a serializer specified previously, this will replace it.
 func merge_schema(schema: Dictionary) -> void:
-	for prop in schema:
-		var prop_entry := PropertyEntry.parse(root, prop)
-		var serializer := schema[prop] as NetworkSchemaSerializer
-		NetworkSynchronizationServer.register_schema(prop_entry.node, prop_entry.property, serializer)
-		_schema_nodes.add(prop_entry.node)
+	_schema.merge(schema, true)
+	_register_schema(schema)
 
 ## Clear any serializers specified earlier.
 ## [br][br]
@@ -126,6 +124,7 @@ func clear_schema() -> void:
 	for node in _schema_nodes:
 		NetworkSynchronizationServer.deregister_schema_for(node)
 	_schema_nodes.clear()
+	_schema.clear()
 
 func _notification(what) -> void:
 	if what == NOTIFICATION_EDITOR_PRE_SAVE:
@@ -181,6 +180,13 @@ func _ready() -> void:
 		NetworkEvents.on_client_start.connect(func(__): process_settings())
 	else:
 		multiplayer.connected_to_server.connect(process_settings)
+
+func _register_schema(schema: Dictionary) -> void:
+	for prop in schema:
+		var prop_entry := PropertyEntry.parse(root, prop)
+		var serializer := schema[prop] as NetworkSchemaSerializer
+		NetworkSynchronizationServer.register_schema(prop_entry.node, prop_entry.property, serializer)
+		_schema_nodes.add(prop_entry.node)
 
 func _reprocess_settings() -> void:
 	if not _properties_dirty:

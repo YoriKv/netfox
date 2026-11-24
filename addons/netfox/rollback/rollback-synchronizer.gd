@@ -69,6 +69,7 @@ var _state_properties := _PropertyPool.new()
 var _input_properties := _PropertyPool.new()
 var _sim_nodes := [] as Array[Node]
 var _liveness_nodes := [] as Array[Node]
+var _schema := {} # property path to NetworkSchemaSerializer
 var _schema_nodes := _Set.new()
 
 var _properties_dirty: bool = false
@@ -119,6 +120,9 @@ func process_settings() -> void:
 	# Register visibility filter
 	for node in _state_properties.get_subjects():
 		NetworkSynchronizationServer.register_visibility_filter(node, visibility_filter)
+
+	# Register schema, which is dropped with the nodes on leaving the tree
+	_register_schema(_schema)
 
 ## Process settings based on authority.
 ## [br][br]
@@ -192,6 +196,9 @@ func add_input(node: Variant, property: String) -> void:
 ## [br][br]
 ## See [NetworkSchemas] for many common serializers.
 ## [br][br]
+## The schema is kept, and registered again whenever settings are processed,
+## e.g. after leaving the tree and entering it again.
+## [br][br]
 ## Example:
 ## [codeblock]
 ##    rollback_synchronizer.set_schema({
@@ -213,11 +220,8 @@ func set_schema(schema: Dictionary) -> void:
 ## set_schema], this method updates the schema, instead of overriding it. If
 ## a property had a serializer specified previously, this will replace it.
 func merge_schema(schema: Dictionary) -> void:
-	for prop in schema:
-		var prop_entry := PropertyEntry.parse(root, prop)
-		var serializer := schema[prop] as NetworkSchemaSerializer
-		NetworkSynchronizationServer.register_schema(prop_entry.node, prop_entry.property, serializer)
-		_schema_nodes.add(prop_entry.node)
+	_schema.merge(schema, true)
+	_register_schema(schema)
 
 ## Clear any serializers specified earlier.
 ## [br][br]
@@ -226,6 +230,7 @@ func clear_schema() -> void:
 	for node in _schema_nodes:
 		NetworkSynchronizationServer.deregister_schema_for(node)
 	_schema_nodes.clear()
+	_schema.clear()
 
 ## Check if input is available for the current tick.
 ## [br][br]
@@ -402,6 +407,13 @@ func _get_configuration_warnings() -> PackedStringArray:
 	))
 
 	return result
+
+func _register_schema(schema: Dictionary) -> void:
+	for prop in schema:
+		var prop_entry := PropertyEntry.parse(root, prop)
+		var serializer := schema[prop] as NetworkSchemaSerializer
+		NetworkSynchronizationServer.register_schema(prop_entry.node, prop_entry.property, serializer)
+		_schema_nodes.add(prop_entry.node)
 
 func _reprocess_settings() -> void:
 	if not _properties_dirty or Engine.is_editor_hint():
