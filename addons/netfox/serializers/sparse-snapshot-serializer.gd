@@ -76,7 +76,10 @@ func read_from(peer: int, properties: _PropertyPool, buffer: StreamPeerBuffer, i
 		var identifier := _get_identity_server()._resolve_reference(peer, idref)
 		if not identifier:
 			# TODO(#563): Handle unknown IDs gracefully
-			_logger.warning("Received unknown identity reference %s, skipping data", [idref])
+			if _get_identity_server()._is_recently_deregistered(idref):
+				_logger.debug("Received reference to deregistered identity %s, skipping data", [idref])
+			else:
+				_logger.warning("Received unknown identity reference %s, skipping data", [idref])
 			break
 		var node := identifier.get_subject() as Node
 

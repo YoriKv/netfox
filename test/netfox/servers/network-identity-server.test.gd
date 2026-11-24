@@ -127,6 +127,67 @@ func suite() -> void:
 		)
 	)
 
+	define("_is_recently_deregistered()", func():
+		test("should be true for deregistered", func():
+			identity_server.register_node(node)
+			var identifier := identity_server._get_identifier_of(node)
+			var by_id := _NetworkIdentityReference.of_id(identifier.get_local_id())
+			var by_name := _NetworkIdentityReference.of_full_name(identifier.get_full_name())
+
+			identity_server.deregister_node(node)
+
+			expect(identity_server._is_recently_deregistered(by_id), "Should be true by id!")
+			expect(identity_server._is_recently_deregistered(by_name), "Should be true by name!")
+		)
+
+		test("should be false for unknown", func():
+			var by_id := _NetworkIdentityReference.of_id(37)
+			var by_name := _NetworkIdentityReference.of_full_name("Unknown Node")
+
+			expect_not(identity_server._is_recently_deregistered(by_id), "Should be false by id!")
+			expect_not(identity_server._is_recently_deregistered(by_name), "Should be false by name!")
+		)
+
+		test("should be false past history limit", func():
+			NetworkMocks.set_network_tick(10)
+			identity_server.register_node(node)
+			var identifier := identity_server._get_identifier_of(node)
+			var by_id := _NetworkIdentityReference.of_id(identifier.get_local_id())
+			identity_server.deregister_node(node)
+
+			NetworkMocks.set_network_tick(10 + NetworkRollback.history_limit + 1)
+			var is_deregistered := identity_server._is_recently_deregistered(by_id)
+			NetworkMocks.set_network_tick(0)
+
+			expect_not(is_deregistered)
+		)
+
+		test("should forget old entries", func():
+			NetworkMocks.set_network_tick(10)
+			identity_server.register_node(node)
+			identity_server.deregister_node(node)
+
+			NetworkMocks.set_network_tick(10 + NetworkRollback.history_limit + 1)
+			Vest.get_tree().root.add_child(orphan_node)
+			identity_server.register_node(orphan_node)
+			identity_server.deregister_node(orphan_node)
+			NetworkMocks.set_network_tick(0)
+
+			expect_equal(identity_server._deregistered_by_local_id.size(), 1)
+			expect_equal(identity_server._deregistered_by_name.size(), 1)
+		)
+
+		test("should be false once registered again", func():
+			identity_server.register_node(node)
+			var by_name := _NetworkIdentityReference.of_full_name(identity_server._get_identifier_of(node).get_full_name())
+			identity_server.deregister_node(node)
+
+			identity_server.register_node(node)
+
+			expect_not(identity_server._is_recently_deregistered(by_name))
+		)
+	)
+
 	define("leaks", func():
 		test("should free identifiers on deregister", func():
 			# Warm up caches

@@ -30,6 +30,11 @@ var _identifier_by_name := {} # full name to NetworkIdentifier
 var _identifier_by_id := {} # peer to (id to NetworkIdentifier)
 var _identifier_by_local_id := {} # local id to NetworkIdentifier
 
+# Identities deregistered recently, so data still in flight for them can be
+# dropped quietly
+var _deregistered_by_name := {} # full name to tick of deregistering
+var _deregistered_by_local_id := {} # local id to tick of deregistering
+
 var _cmd_ids: _NetworkCommandServer.Command
 var _packet_serializer := _IdentityPacketSerializer.new()
 
@@ -94,6 +99,9 @@ func clear() -> void:
 	_identifier_by_name.clear()
 	_identifier_by_id.clear()
 	_identifier_by_local_id.clear()
+	_deregistered_by_name.clear()
+	_deregistered_by_local_id.clear()
+	_push_queue.clear()
 	_next_id = 0
 
 ## Queue sending the numeric ID of [param node] to [param peer]
@@ -120,6 +128,16 @@ func flush_queue() -> void:
 
 func _get_identifier_of(what: Object) -> _NetworkIdentifier:
 	return _identifiers.get(what)
+
+# Return true if [param identity_reference] could not be resolved because it
+# refers to an identity deregistered within the rollback history limit
+func _is_recently_deregistered(identity_reference: _NetworkIdentityReference) -> bool:
+	var deregistered_at := -1
+	if identity_reference.has_id():
+		deregistered_at = _deregistered_by_local_id.get(identity_reference.get_id(), -1)
+	else:
+		deregistered_at = _deregistered_by_name.get(identity_reference.get_full_name(), -1)
+	return deregistered_at >= 0 and _is_recent(deregistered_at, NetworkTime.tick)
 
 func _resolve_reference(peer: int, identity_reference: _NetworkIdentityReference, allow_queue: bool = true) -> _NetworkIdentifier:
 	if identity_reference.has_id():
@@ -149,6 +167,7 @@ func _register(what: Object, path: String) -> void:
 	_identifiers[what] = identifier
 	_identifier_by_name[identifier.get_full_name()] = identifier
 	_identifier_by_local_id[identifier.get_local_id()] = identifier
+	_deregistered_by_name.erase(identifier.get_full_name())
 
 func _deregister(what: Object) -> void:
 	if not _identifiers.has(what):
@@ -159,6 +178,25 @@ func _deregister(what: Object) -> void:
 	_identifier_by_name.erase(identifier.get_full_name())
 	_identifier_by_local_id.erase(identifier.get_local_id())
 	_erase_from_id_cache(identifier)
+	_remember_deregistered(identifier)
+
+func _remember_deregistered(identifier: _NetworkIdentifier) -> void:
+	var tick := NetworkTime.tick
+
+	# Forget old entries as we go
+	for full_name in _deregistered_by_name.keys():
+		if not _is_recent(_deregistered_by_name[full_name], tick):
+			_deregistered_by_name.erase(full_name)
+	for local_id in _deregistered_by_local_id.keys():
+		if not _is_recent(_deregistered_by_local_id[local_id], tick):
+			_deregistered_by_local_id.erase(local_id)
+
+	_deregistered_by_name[identifier.get_full_name()] = tick
+	_deregistered_by_local_id[identifier.get_local_id()] = tick
+
+# A tick after the current one is from before the clock was reset
+func _is_recent(deregistered_at: int, tick: int) -> bool:
+	return deregistered_at <= tick and tick - deregistered_at <= NetworkRollback.history_limit
 
 func _get_identifier_by_name(full_name: String) -> _NetworkIdentifier:
 	return _identifier_by_name.get(full_name)

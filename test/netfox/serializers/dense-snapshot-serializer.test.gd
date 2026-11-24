@@ -71,6 +71,38 @@ func suite() -> void:
 		expect_equal(deserialized, expected)
 	)
 
+	test("should not warn on deregistered identifiers", func():
+		var schema := _NetworkSchema.new()
+		var writer_identity_server := _NetworkIdentityServer.new(TestingCommandServer.new())
+		var reader_identity_server := _NetworkIdentityServer.new(TestingCommandServer.new())
+
+		Vest.get_tree().root.add_child.call_deferred(writer_identity_server)
+		Vest.get_tree().root.add_child.call_deferred(reader_identity_server)
+		await writer_identity_server.ready; await reader_identity_server.ready
+
+		var writer_serializer := _DenseSnapshotSerializer.new(schema, writer_identity_server)
+		var reader_serializer := _DenseSnapshotSerializer.new(schema, reader_identity_server)
+
+		var subject := await get_subject()
+		var props := _PropertyPool.of([[subject, "position"]])
+		writer_identity_server.register_node(subject)
+		reader_identity_server.register_node(subject)
+		reader_identity_server.deregister_node(subject)
+
+		var snapshot := _Snapshot.of(0, [[subject, "position", Vector3.ZERO]], [subject])
+		var serialized := writer_serializer.write_for(1, snapshot, props)[0]
+
+		var logger := _BaseSnapshotSerializer._logger
+		var recording_logger := RecordingLogger.new()
+		_BaseSnapshotSerializer._logger = recording_logger
+		var deserialized := reader_serializer.read_from(1, props, to_buffer(serialized))
+		_BaseSnapshotSerializer._logger = logger
+
+		expect(deserialized.is_empty(), "Data should be skipped!")
+		expect_empty(recording_logger.warnings)
+		expect_equal(recording_logger.debugs.size(), 1)
+	)
+
 	test("should handle missing data", func():
 		var schema := _NetworkSchema.new()
 		var serializer := _DenseSnapshotSerializer.new(schema)
@@ -102,3 +134,16 @@ func suite() -> void:
 
 		expect_equal(deserialized, expected)
 	)
+
+class RecordingLogger extends NetfoxLogger:
+	var warnings := []
+	var debugs := []
+
+	func _init() -> void:
+		super("netfox", "Recording")
+
+	func warning(text: String, values: Array = []):
+		warnings.append(text % values)
+
+	func debug(text: String, values: Array = []):
+		debugs.append(text % values)
