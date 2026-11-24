@@ -329,6 +329,13 @@ func has_input_for_tick(node: Node, tick: int) -> bool:
 func free_input_submission_data_for(_node: Node) -> void:
 	pass
 
+# The tick a node added now is alive from: the next tick during rollback, the
+# tick about to run otherwise
+func _get_spawn_tick() -> int:
+	if is_rollback():
+		return _tick + 1
+	return NetworkTime.tick
+
 func _get_rollback_method(object: Object) -> Callable:
 	return object._rollback_tick
 

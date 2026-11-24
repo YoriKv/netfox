@@ -87,7 +87,7 @@ func suite() -> void:
 			parent.add_child(root)
 			await Vest.get_tree().process_frame
 
-			expect_equal(synchronizer.spawn_tick, NetworkRollback.tick + 1)
+			expect_equal(synchronizer.spawn_tick, NetworkTime.tick)
 			expect(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should be registered!")
 			expect(RollbackSimulationServer._callbacks.has(root), "Simulation should be registered!")
 			expect(RollbackLivenessServer.is_registered(root), "Liveness should be registered!")

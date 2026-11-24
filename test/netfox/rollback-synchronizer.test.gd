@@ -179,7 +179,7 @@ func suite():
 			parent.add_child(root)
 			await Vest.get_tree().process_frame
 
-			expect_equal(rbs.spawn_tick, NetworkRollback.tick + 1)
+			expect_equal(rbs.spawn_tick, NetworkTime.tick)
 			expect_not_null(NetworkIdentityServer._get_identifier_of(root))
 			expect(NetworkHistoryServer._rb_state_properties.has_subject(root), "State should be registered!")
 			expect(NetworkSynchronizationServer._rb_state_properties.has_subject(root), "State should be synchronized!")
@@ -188,6 +188,61 @@ func suite():
 			expect_equal(rbs._liveness_nodes, [root] as Array[Node])
 			expect_equal(NetworkSynchronizationServer._visibility_filters.get(root), rbs.visibility_filter)
 			expect_equal(NetworkSynchronizationServer._schemas._get_serializer(root, ^"tracked_value"), serializer)
+		)
+	)
+
+	define("despawn()", func():
+		test("should warn once without liveness nodes", func():
+			var root := RollbackAware.new()
+			var rbs := RollbackSynchronizer.new()
+			rbs.root = root
+			root.add_child(rbs)
+			Vest.get_tree().root.add_child.call_deferred(root)
+			await root.ready
+			rbs.process_settings()
+
+			var logger := RecordingLogger.new()
+			rbs._logger = logger
+			rbs.despawn()
+			rbs.despawn()
+
+			expect_equal(logger.warnings.size(), 1)
+			root.queue_free()
+		)
+
+		test("should not warn with liveness nodes", func():
+			var setup := await create_spawn_synchronizer(0, 0)
+			var rbs := setup[1] as RollbackSynchronizer
+			rbs.process_settings()
+
+			var logger := RecordingLogger.new()
+			rbs._logger = logger
+			rbs.despawn()
+
+			expect_empty(logger.warnings)
+		)
+	)
+
+	define("default spawn tick", func():
+		test("should be current tick", func():
+			NetworkMocks.set_tick(12, 3)
+			var setup := await create_spawn_synchronizer(-1, 0)
+			var rbs := setup[1] as RollbackSynchronizer
+
+			expect_equal(rbs.spawn_tick, 12)
+			NetworkMocks.set_tick(0, 0)
+		)
+
+		test("should be next tick in rollback", func():
+			NetworkMocks.set_tick(12, 7)
+			var setup := make_spawn_synchronizer(-1, 0)
+			var root := setup[0] as SpawnAwareRollbackNode
+			var rbs := setup[1] as RollbackSynchronizer
+
+			NetworkMocks.in_rollback(func(): Vest.get_tree().root.add_child(root))
+
+			expect_equal(rbs.spawn_tick, 8)
+			NetworkMocks.set_tick(0, 0)
 		)
 	)
 
@@ -240,6 +295,15 @@ func make_spawn_synchronizer(spawn_tick: int, tracked_value: int) -> Array:
 	spawn_root.add_child(spawn_rbs)
 
 	return [spawn_root, spawn_rbs]
+
+class RecordingLogger extends NetfoxLogger:
+	var warnings := []
+
+	func _init() -> void:
+		super("netfox", "Recording")
+
+	func warning(text: String, values: Array = []):
+		warnings.append(text % values)
 
 class SpawnAwareRollbackNode extends Node:
 	var tracked_value := 0

@@ -26,8 +26,9 @@ class_name PredictiveSynchronizer
 ## The rollback tick when this synchronizer's managed nodes became alive.
 ## Used to seed initial state history, register liveness, and request resim.
 ## [br][br]
-## If not set, defaults to the next tick on entering the tree. Reset on leaving
-## the tree, as the managed nodes are deregistered.
+## If not set, defaults to the current tick on entering the tree - the next
+## tick if entering during rollback. Reset on leaving the tree, as the managed
+## nodes are deregistered.
 var spawn_tick = -1
 
 var _state_properties := _PropertyPool.new()
@@ -35,8 +36,11 @@ var _sim_nodes: Array[Node] = []
 var _liveness_nodes: Array[Node] = []
 
 var _properties_dirty: bool = false
+var _has_warned_despawn: bool = false
 
 static var _managed_roots := {} # root node to PredictiveSynchronizer
+
+var _logger := NetfoxLogger._for_netfox("PredictiveSynchronizer")
 
 ## Process settings.
 ## [br][br]
@@ -90,7 +94,20 @@ func spawn(p_tick: int = NetworkRollback.tick) -> void:
 ## [br][br]
 ## When rewinding to a tick later than the despawn tick, every managed node will
 ## be deactivated.
+## [br][br]
+## Only nodes implementing [code]_rollback_spawn[/code],
+## [code]_rollback_despawn[/code] or [code]_rollback_destroy[/code] are
+## managed this way. Without any, this method does nothing, and warns once.
 func despawn(p_tick: int = NetworkRollback.tick) -> void:
+	if _liveness_nodes.is_empty() and not _has_warned_despawn:
+		_has_warned_despawn = true
+		_logger.warning(
+			"Despawning %s does nothing, as no node it manages is registered " +
+			"for liveness; implement _rollback_spawn(), _rollback_despawn() " +
+			"or _rollback_destroy() on them",
+			[root]
+		)
+
 	for node in _liveness_nodes:
 		RollbackLivenessServer.despawn(node, p_tick)
 
@@ -126,7 +143,7 @@ func _enter_tree() -> void:
 	_managed_roots[root] = self
 
 	if spawn_tick < 0:
-		spawn_tick = NetworkRollback.tick + 1
+		spawn_tick = NetworkRollback._get_spawn_tick()
 
 	# Resimulate from spawn tick *only on the next loop*
 	NetworkRollback.before_loop.connect(_notify_spawn_resimulation, CONNECT_ONE_SHOT)
