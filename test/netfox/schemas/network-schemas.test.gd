@@ -108,6 +108,14 @@ func suite() -> void:
 			expect_equal(buffer.data_array.size(), expected_size, "Size mismatch! Expected %d bytes, got %d" % [expected_size, buffer.data_array.size()])
 		)
 
+	test("variant should not decode past the data", func():
+		var buffer := StreamPeerBuffer.new()
+		buffer.data_array = PackedByteArray([0xFF, 0xFF, 0xFF, 0x7F, 1, 2])
+
+		expect_null(NetworkSchemas.variant().decode(buffer))
+		expect_equal(buffer.get_available_bytes(), 0)
+	)
+
 	test("should handle negative degrees", func():
 		var input_value := -60.
 		var expected_value := 300.

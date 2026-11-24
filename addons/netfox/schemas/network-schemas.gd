@@ -489,8 +489,14 @@ class _VariantSerializer extends NetworkSchemaSerializer:
 	func encode(v: Variant, b: StreamPeerBuffer) -> void:
 		b.put_var(v, false)
 
+	# Bounded by the bytes at hand: get_var() allocates whatever size the
+	# data claims, and a large claim in a malformed packet crashes the engine
 	func decode(b: StreamPeerBuffer) -> Variant:
-		return b.get_var(false)
+		var size := b.get_u32()
+		if size > b.get_available_bytes():
+			b.seek(b.get_size())
+			return null
+		return bytes_to_var(b.get_data(size)[1])
 
 class _StringSerializer extends NetworkSchemaSerializer:
 	func encode(v: Variant, b: StreamPeerBuffer) -> void:
