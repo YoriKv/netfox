@@ -4,8 +4,9 @@ class_name _DenseSnapshotSerializer
 static func _static_init() -> void:
 	_logger = NetfoxLogger._for_netfox("DenseSnapshotSerializer")
 
-# Pass the same [param frames] to write the same snapshot for several peers:
-# each subject's data is encoded once, and only its reference per peer
+# Pass the same [param frames] to write snapshots for several peers: each
+# subject's data is encoded once for all snapshots holding the same values of
+# it, after [param property_filter], and only its reference per peer
 # The [param property_filter] leaves properties out; the reader must leave out
 # the same ones
 func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}, property_filter: Callable = _default_property_filter) -> Array[PackedByteArray]:
@@ -34,19 +35,21 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		if _write_identifier(node, peer, frame_buffer) != OK:
 			continue
 
-		var frame_data := frames.get(node, PackedByteArray()) as PackedByteArray
+		var values := {}
+		for property in properties.get_properties_of_raw(node):
+			if not property_filter.call(node, property): continue
+			assert(snapshot.has_property(node, property), "Trying to serialize missing property %s on subject %s!" % [property, node])
+			values[property] = snapshot.get_property(node, property)
+
+		var frame_data := _find_frame(frames, node, values)
 		if frame_data.is_empty():
 			node_buffer.clear()
 			data_buffer.clear()
 
-			# Write properties as-is
+			# Write properties as-is, in the property pool's order
 			# First into a buffer, so we can start with the state size
-			for property in properties.get_properties_of_raw(node):
-				if not property_filter.call(node, property): continue
-				assert(snapshot.has_property(node, property), "Trying to serialize missing property %s on subject %s!" % [property, node])
-
-				var value := snapshot.get_property(node, property)
-				_write_property(node, property, value, node_buffer)
+			for property in values:
+				_write_property(node, property, values[property], node_buffer)
 
 			# Indicate state size for the node
 			varuint.encode(node_buffer.data_array.size(), data_buffer)
@@ -54,7 +57,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 			# Write node state
 			data_buffer.put_data(node_buffer.data_array)
 			frame_data = data_buffer.data_array
-			frames[node] = frame_data
+			_keep_frame(frames, node, values, frame_data)
 
 		frame_buffer.put_data(frame_data)
 

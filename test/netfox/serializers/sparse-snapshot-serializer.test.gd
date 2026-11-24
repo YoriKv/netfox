@@ -121,6 +121,38 @@ func suite() -> void:
 		unknown_subject.queue_free()
 	)
 
+	test("should share a subject's frame only between snapshots with the same values of it", func():
+		var serializer := _SparseSnapshotSerializer.new(_NetworkSchema.new())
+
+		var subject := await get_subject()
+		var other := await get_subject()
+		NetworkIdentityServer.register_node(subject)
+		NetworkIdentityServer.register_node(other)
+
+		var props := _PropertyPool.of([
+			[subject, "position"], [subject, "scale"],
+			[other, "position"], [other, "scale"]
+		])
+		var snapshots := [
+			_Snapshot.of(0, [[subject, "position", Vector3.ONE], [subject, "scale", Vector3.ONE],
+				[other, "position", Vector3.UP], [other, "scale", Vector3.ONE]], [subject, other]),
+			_Snapshot.of(0, [[subject, "position", Vector3.ONE], [subject, "scale", Vector3.ONE],
+				[other, "position", Vector3.DOWN], [other, "scale", Vector3.ONE]], [subject, other])
+		]
+
+		var frames := {}
+		for snapshot in snapshots:
+			var shared := serializer.write_for(1, snapshot, props, _BaseSnapshotSerializer._default_filter, frames)
+			expect_equal(shared, serializer.write_for(1, snapshot, props))
+		expect_equal(frames[subject].size(), 1, "Encoded once for the same values")
+		expect_equal(frames[other].size(), 2, "Encoded again for other values")
+
+		NetworkIdentityServer.deregister_node(subject)
+		NetworkIdentityServer.deregister_node(other)
+		subject.queue_free()
+		other.queue_free()
+	)
+
 	test("should write the same with frames reused across peers", func():
 		var schema := _NetworkSchema.new()
 		var serializer := _SparseSnapshotSerializer.new(schema)

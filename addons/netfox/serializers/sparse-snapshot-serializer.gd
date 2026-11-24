@@ -4,8 +4,9 @@ class_name _SparseSnapshotSerializer
 static func _static_init() -> void:
 	_logger = NetfoxLogger._for_netfox("SparseSnapshotSerializer")
 
-# Pass the same [param frames] to write the same snapshot for several peers:
-# each subject's data is encoded once, and only its reference per peer
+# Pass the same [param frames] to write snapshots for several peers: each
+# subject's data is encoded once for all snapshots holding the same values of
+# it, and only its reference per peer
 func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter: Callable = _default_filter, frames: Dictionary = {}) -> Array[PackedByteArray]:
 	var packet_buffer := _PacketBuffer.new(max_packet_size)
 	var frame_buffer := StreamPeerBuffer.new()
@@ -33,7 +34,8 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 		if _write_identifier(node, peer, frame_buffer) != OK:
 			continue
 
-		var frame_data := frames.get(node, PackedByteArray()) as PackedByteArray
+		var values := snapshot._data.get(node, {}) as Dictionary
+		var frame_data := _find_frame(frames, node, values)
 		if frame_data.is_empty():
 			node_buffer.clear()
 			data_buffer.clear()
@@ -54,7 +56,7 @@ func write_for(peer: int, snapshot: _Snapshot, properties: _PropertyPool, filter
 			varbits.encode(changed_bits, data_buffer)						# Changed prop bits
 			data_buffer.put_data(node_buffer.data_array)					# Changed props
 			frame_data = data_buffer.data_array
-			frames[node] = frame_data
+			_keep_frame(frames, node, values, frame_data)
 
 		frame_buffer.put_data(frame_data)
 
