@@ -125,6 +125,47 @@ func suite() -> void:
 		)
 	)
 
+	define("multi-tick loop", func():
+		test("should simulate each tick of the loop once, in order, without remote input or state", func():
+			# Given a node whose input this peer owns
+			Vest.get_tree().root.multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
+			NetworkRollback.reset()
+			NetworkMocks.set_tick(100, 0)
+			var input := await add_node(TickInput.new())
+			var subject := await add_node(TickRecorder.new())
+			RollbackSimulationServer.register(subject._rollback_tick)
+			RollbackSimulationServer.register_rollback_input_for(subject, input)
+			NetworkHistoryServer.register_rollback_input(input, ^"value")
+			NetworkHistoryServer.register_rollback_state(subject, ^"position")
+
+			# When a loop runs three ticks, then a loop runs one
+			run_tick_loop(3)
+			run_tick_loop(1)
+
+			# Then
+			expect_equal(subject.ticks, [100, 101, 102, 103])
+
+			for node in [subject, input]:
+				RollbackSimulationServer.deregister_node(node)
+				NetworkHistoryServer.deregister(node)
+				node.queue_free()
+			NetworkRollback.reset()
+		)
+
+		test("reset should forget the loop's first tick", func():
+			# Given
+			network_rollback._after_tick(40)
+
+			# When
+			network_rollback.reset()
+			NetworkMocks.set_network_tick(100)
+			network_rollback._rollback()
+
+			# Then
+			expect_equal(network_rollback._rollback_from, 99)
+		)
+	)
+
 	define("_handle_tick_jump()", func():
 		test("should advance the earliest valid history tick", func():
 			# Given
@@ -175,3 +216,26 @@ func suite() -> void:
 			expect_equal(network_rollback._rollback_to, 120)
 		)
 	)
+
+# Runs a tick loop of [param ticks] ticks as NetworkTime does, without its
+# signals: each tick's input recorded, then the rollback loop
+func run_tick_loop(ticks: int) -> void:
+	for i in ticks:
+		NetworkRollback._after_tick(NetworkTime.tick)
+		NetworkTime._tick += 1
+	NetworkRollback._rollback()
+
+func add_node(node: Node) -> Node:
+	Vest.get_tree().root.add_child.call_deferred(node)
+	await node.ready
+	return node
+
+class TickInput extends Node:
+	var value := 1
+
+# Notes each tick it is simulated at
+class TickRecorder extends Node3D:
+	var ticks: Array[int] = []
+
+	func _rollback_tick(_delta: float, tick: int, _is_fresh: bool) -> void:
+		ticks.append(tick)
