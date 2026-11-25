@@ -176,6 +176,23 @@ func suite() -> void:
 			})
 			node.queue_free()
 		)
+
+		test("should carry nothing into a gap once the tick before it left the history", func():
+			var node := await get_node()
+			var history_server := servers.history_server()
+			# Recorded every tick, then a gap of 60 ticks, then 4 ticks: tick 63 is out
+			var ticks := range(0, 64) + range(124, 128)
+			for tick in ticks:
+				history_server._rb_state_history.set_property(tick, node, ^"scale", Vector3.ONE * tick)
+			NetworkMocks.set_network_tick(128)
+
+			# A state for a tick of the gap
+			history_server._merge_rollback_state(_Snapshot.of(70, [[node, ^"position", Vector3.UP]], [node]))
+
+			expect_equal(history_server.get_rollback_state_at(node, 70), { ^"position": Vector3.UP },
+				"No tick at or before it is held to carry from")
+			node.queue_free()
+		)
 	)
 
 	define("push_rollback_state()", func():

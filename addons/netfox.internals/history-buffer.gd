@@ -46,12 +46,16 @@ func push(value: Variant) -> void:
 	var overflow: int = _head - _tail - _capacity
 	if overflow > 0:
 		_tail += overflow
+		_settle_tail()
 
 func pop() -> Variant:
 	assert(is_not_empty(), "History buffer is empty!")
 
 	var value = _buffer[_tail % _capacity]
+	# Gone: a write before the tail must not find it again
+	_previous[_tail % _capacity] = null
 	_tail += 1
+	_settle_tail()
 	return value
 
 func values() -> Array:
@@ -175,13 +179,21 @@ func clear():
 func trim(at: int) -> void:
 	if _tail == _head or at >= _head:
 		return
+	# Gone: a write before the tail must not find them again
+	for i in range(maxi(at, _tail), _head):
+		_previous[i % _capacity] = null
 	if at <= _tail:
 		clear()
 		return
-	for i in range(at, _head):
-		_previous[i % _capacity] = null
-	_head = at
-	_slot = at % _capacity
+	# The gap before [param at] is cut with it: the last tick ends on an item
+	_head = _previous[(at - 1) % _capacity] + 1
+	_slot = _head % _capacity
+
+# Gaps point back to the last item before them. Once that item is gone, the
+# gap has nothing to return, so the tail moves on to the next item.
+func _settle_tail() -> void:
+	while _tail < _head and _previous[_tail % _capacity] != _tail:
+		_tail += 1
 
 func is_empty() -> bool:
 	return _tail == _head
