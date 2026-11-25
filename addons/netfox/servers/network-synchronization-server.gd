@@ -61,6 +61,8 @@ var _rb_send_newest_only := ProjectSettings.get_setting("netfox/rollback/send_ne
 var _rb_send_intermediate := ProjectSettings.get_setting("netfox/rollback/send_intermediate_states_to_others", false) as bool
 var _rb_newest_sent := {} # peer to (subject to _SentState)
 var _rb_newest_loop_to := -1 # The last tick the previous loop recorded
+var _rb_full_after_withdrawal := ProjectSettings.get_setting("netfox/rollback/full_states_after_withdrawal", false) as bool
+var _rb_full_until := {} # peer to (subject to the last withdrawn tick it was sent a state of)
 
 var _last_sync_state_sent := _Snapshot.new(0)
 var _is_last_sync_state_own := true # Not a recorded snapshot, so it may be written
@@ -213,6 +215,8 @@ func deregister(node: Node) -> void:
 		(sent_subjects as _Set).erase(node)
 	for sent_states in _rb_newest_sent.values():
 		(sent_states as Dictionary).erase(node)
+	for full_until in _rb_full_until.values():
+		(full_until as Dictionary).erase(node)
 	_sync_full_pending.erase(node)
 	_last_sync_state_sent.erase_subject(node)
 
@@ -225,6 +229,7 @@ func deregister(node: Node) -> void:
 func erase_peer(peer: int) -> void:
 	_rb_sent_state_history.erase(peer)
 	_rb_newest_sent.erase(peer)
+	_rb_full_until.erase(peer)
 	_sync_sent_subjects.erase(peer)
 
 ## Forget what was sent to other peers, while keeping the registered properties
@@ -236,6 +241,7 @@ func reset() -> void:
 	_rb_sent_state_history.clear()
 	_rb_latest_received_state.clear()
 	_rb_newest_sent.clear()
+	_rb_full_until.clear()
 	_rb_newest_loop_to = -1
 	for data in [_newest_input, _gap_checked, _fills, _starved_from, _starve_filled]:
 		(data as Dictionary).clear()
@@ -553,25 +559,29 @@ func _synchronize_newest_state(to: int) -> void:
 				continue
 
 			var tick := newest[subject] as int
+			var full_until := _rb_full_until.get(peer, {}) as Dictionary
+			var is_forced := full_until.has(subject)
 			var is_owner := false
 			var is_chained := false
 			var reference := sent_states.get(subject) as _SentState
 			if _rb_send_intermediate or _rb_owner_only_state_properties.has_subject(subject):
 				var owns_input := _is_input_owner(subject, peer)
 				is_owner = owns_input and _rb_owner_only_state_properties.has_subject(subject)
-				is_chained = _rb_send_intermediate and not owns_input and not is_full and reference != null and reference.tick < tick
+				is_chained = _rb_send_intermediate and not owns_input and not is_full and not is_forced and reference != null and reference.tick < tick
 			var values_key := [subject, is_owner]
-			var key := [subject, is_owner, reference, is_chained, is_full]
+			var key := [subject, is_owner, reference, is_chained, is_full, is_forced]
 			var result := prepared.get(key, []) as Array
 			if result.is_empty():
 				if not values_of.has(values_key):
 					values_of[values_key] = _get_newest_values(subject, tick, is_owner)
-				result = _prepare_newest(subject, tick, values_of[values_key], is_owner, reference, is_chained, is_full)
+				result = _prepare_newest(subject, tick, values_of[values_key], is_owner, reference, is_chained, is_full, is_forced)
 				prepared[key] = result
 
 			var sends := result[0] as Array
 			if sends.is_empty():
 				continue
+			if is_forced and tick >= (full_until[subject] as int):
+				full_until.erase(subject)
 			for send in sends:
 				entries.append([subject, send[0], send[1]])
 				sent_props += (send[1] as Dictionary).size()
@@ -589,8 +599,9 @@ func _synchronize_newest_state(to: int) -> void:
 # the newest state, as a diff against [param reference], and with
 # [param is_chained] first each authoritative state between the two. With
 # [param is_full], the newest state in full, unless it is the one sent before:
-# a node waiting for input, as its owner fell silent, is sent nothing
-func _prepare_newest(subject: Object, tick: int, values: Dictionary, is_owner: bool, reference: _SentState, is_chained: bool, is_full: bool) -> Array:
+# a node waiting for input, as its owner fell silent, is sent nothing. With
+# [param is_forced], in full unless it is the very state sent before
+func _prepare_newest(subject: Object, tick: int, values: Dictionary, is_owner: bool, reference: _SentState, is_chained: bool, is_full: bool, is_forced: bool = false) -> Array:
 	var sends := []
 	var last := reference
 	if is_chained:
@@ -608,7 +619,9 @@ func _prepare_newest(subject: Object, tick: int, values: Dictionary, is_owner: b
 				last = _SentState.new(between_tick, between_values)
 
 	var diff := values if last == null else _diff_values(last.values, values)
-	if is_full and (last == null or tick > last.tick or not diff.is_empty()):
+	if is_forced and (last == null or tick != last.tick or not diff.is_empty()):
+		diff = values
+	elif is_full and (last == null or tick > last.tick or not diff.is_empty()):
 		diff = values
 	if not diff.is_empty():
 		sends.append([tick, diff])
@@ -938,11 +951,30 @@ func _end_starvation(input: Node, tick: int) -> void:
 		if filled >= tick:
 			withdrawn.append(filled)
 			fills.erase(filled)
-	NetworkHistoryServer._withdraw_input(input, tick, withdrawn, _simulation_server._get_controlled_by(input))
+	var controlled := _simulation_server._get_controlled_by(input)
+	NetworkHistoryServer._withdraw_input(input, tick, withdrawn, controlled)
+	if _rb_full_after_withdrawal:
+		_force_full_after(controlled, tick)
 	_starved_from.erase(input)
 	_starve_filled.erase(input)
 	_gap_checked[input] = maxi(_gap_checked.get(input, tick - 1), tick - 1)
 	_logger.debug("Input of %s arrives again @%d, %d fills withdrawn", [input, tick, withdrawn.size()])
+
+# Each peer sent a state of [param controlled] newer than [param tick], a
+# state simulated from a withdrawn fill, holds it as authoritative, and its
+# own records after it follow from it; a diff would leave the properties it
+# omits as they were there. So each is sent those nodes' states in full until
+# one of that state's tick or later
+func _force_full_after(controlled: Array, tick: int) -> void:
+	for peer in _rb_newest_sent:
+		var sent_states := _rb_newest_sent[peer] as Dictionary
+		for node in controlled:
+			var sent := sent_states.get(node) as _SentState
+			if sent == null or sent.tick <= tick:
+				continue
+			if not _rb_full_until.has(peer):
+				_rb_full_until[peer] = {}
+			_rb_full_until[peer][node] = maxi(_rb_full_until[peer].get(node, -1), sent.tick)
 
 # Fill the gaps and silences of inputs with starvation
 # Called before the rollback loop decides its range

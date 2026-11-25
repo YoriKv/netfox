@@ -1037,6 +1037,62 @@ func suite() -> void:
 			cleanup_starving(sync_server, setup)
 		)
 
+		for full_after in [false, true]:
+			test("should leave the owner %s after a withdrawal, full states after withdrawal %s" % [
+					"the server's values" if full_after else "stale", "on" if full_after else "off"], func():
+				var sync_server := await get_newest_server([2])
+				sync_server._rb_full_after_withdrawal = full_after
+				var setup := await starving_input(sync_server, 10)
+				var input := setup[0] as StarvingInput
+				var node := setup[1] as Node3D
+				register_rollback_state(sync_server, node)
+				sync_server.register_rollback_state(node, ^"scale")
+				ingest_inputs(sync_server, input, range(70, 81), 100)
+				NetworkMocks.set_network_tick(93)
+				sync_server._starve_inputs()
+
+				# The silence's coast, sent: the owner holds its state of 92 as
+				# authoritative and predicts the ticks after it from it
+				var coast := { ^"position": Vector3(5, 0, 0), ^"scale": Vector3.ONE }
+				for tick in range(81, 93):
+					record_state(tick, node, coast)
+				newest_loop(sync_server, 92)
+
+				# Real input from 89 withdraws the fills; the server resimulates
+				# 90, then 91 to 93 in one loop, ending where the coast was not
+				NetworkMocks.set_network_tick(95)
+				sync_server._ingest_input(2, _Snapshot.of(89, [[input, ^"position", Vector3.ONE]], [input]))
+				for tick in range(90, 93):
+					record_state(tick, node, coast, false)
+				record_state(90, node, { ^"position": Vector3(4, 0, 0), ^"scale": Vector3.ONE * 2 })
+				newest_loop(sync_server, 95)
+				var settled := { ^"position": Vector3(4, 0, 0), ^"scale": Vector3.ONE }
+				for tick in range(91, 94):
+					record_state(tick, node, settled)
+				newest_loop(sync_server, 96)
+				# Then a diff again: unchanged, nothing sent
+				record_state(94, node, settled)
+				newest_loop(sync_server, 97)
+
+				# The owner's record of each tick, from what it held, each state received merged in
+				var owner_records := { 92: coast.duplicate(), 93: coast.duplicate() }
+				var packets := sent_newest(sync_server, 2, [node], [^"position", ^"scale"])
+				for packet in packets.slice(1):
+					for state in packet:
+						if not owner_records.has(state[0]):
+							owner_records[state[0]] = {}
+						owner_records[state[0]].merge(state[2], true)
+				expect_equal(packets.map(func(packet): return packet[0][0]), [92, 90, 93], "The newest state each loop, nothing for the unchanged one")
+				if full_after:
+					expect_equal(owner_records[93], settled, "Sent in full, the owner's newest record holds the server's values")
+				else:
+					expect_equal(owner_records[93], { ^"position": Vector3(5, 0, 0), ^"scale": Vector3.ONE },
+						"A diff without the unchanged position leaves the coast's")
+				expect_not(sync_server._rb_full_until.get(2, {}).has(node), "Forgotten once sent one at or past the withdrawn state")
+
+				cleanup_starving(sync_server, setup)
+			)
+
 		test("should not fill before the first input, for a dead node or an owner gone", func():
 			var sync_server := await get_peered_server([2])
 			var setup := await starving_input(sync_server, 10)

@@ -186,6 +186,15 @@ var SETTINGS: Array[Dictionary] = [
 		"type": TYPE_BOOL
 	},
 	{
+		# With send_newest_state_only and input starvation: when real input
+		# withdraws fills, send each peer that was sent a state simulated from
+		# them that node's states in full until one of the newest such state's
+		# tick or later
+		"name": "netfox/rollback/full_states_after_withdrawal",
+		"value": false,
+		"type": TYPE_BOOL
+	},
+	{
 		# Debug: resimulate at least this many ticks in every rollback loop
 		"name": "netfox/rollback/debug_resimulate_ticks",
 		"value": 0,
